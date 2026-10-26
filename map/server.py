@@ -20,6 +20,7 @@ page's buttons can run the isolation tests and the ransomware scenario.
     python map/server.py [--port 8080]
 """
 import argparse
+import importlib.util
 import ipaddress
 import json
 import os
@@ -54,6 +55,19 @@ JOBS = {
     "tests": [sys.executable, "-u", "tests/isolation.py"],
     "attack": [sys.executable, "-u", "scenarios/ransomware.py"],
 }
+
+
+def attack_paths():
+    """How many paths the ransomware scenario tries, so the page can say so
+    before the attempts come in. None if the scenario cannot be read."""
+    try:
+        spec = importlib.util.spec_from_file_location("ransomware_scenario", ROOT / "scenarios" / "ransomware.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)  # only definitions; main() runs from the command line
+        return len(module.ATTEMPTS)
+    except Exception as e:
+        log(f"could not count the ransomware's attack paths: {e!r}")
+        return None
 
 
 def log(msg):
@@ -303,6 +317,7 @@ class Engine:
         self.firewall = Follower(self.run / "logs" / "firewall.jsonl", from_end=True)
         self.events = Follower(self.run / "events.jsonl")
         self.alerts_file = Follower(self.run / "alerts.jsonl")
+        self.attack_paths = attack_paths()
         self._reset()
 
     # -- lifecycle
@@ -310,7 +325,7 @@ class Engine:
     def _reset(self):
         self.tests = {"running": False, "total": 0, "results": {}, "summary": None, "ts": None}
         self.scenario = {"running": False, "node": None, "attempts": 0, "breaches": 0,
-                         "result": None, "ts": None}
+                         "planned": self.attack_paths, "result": None, "ts": None}
         self.records = None
         self.alerts = deque(maxlen=200)
         self.windows = deque(maxlen=20)  # when tests and attacks ran, to explain alerts
@@ -529,7 +544,7 @@ class Engine:
             self._on_probe(ev, quiet)
         elif kind == "scenario-start":
             self.scenario = {"running": True, "name": ev.get("name"), "node": ev.get("node"),
-                             "attempts": 0, "breaches": 0, "result": None, "ts": ts}
+                             "attempts": 0, "breaches": 0, "planned": self.attack_paths, "result": None, "ts": ts}
             if not quiet:
                 self._publish({"kind": "scenario", "scenario": self.scenario})
         elif kind == "scenario-end":
@@ -576,7 +591,9 @@ class Engine:
                 self.scenario["breaches"] += 1
             if not quiet:
                 self._publish({"kind": "scenario", "scenario": self.scenario})
-        if quiet:
+        # A probe that could not run (observed "error") says nothing about
+        # the network, so there is no connection to draw.
+        if quiet or ev.get("observed") == "error":
             return
         a, b = ev.get("from"), self.topo.resolve(ev.get("to"))
         key = (a, b, ev.get("port"))
@@ -715,9 +732,27 @@ CONTENT_TYPES = {
 }
 
 
+# The page's buttons start programs in a container that can drive Docker, so
+# only this page may press them. Any other web page open in the same browser
+# could otherwise send a POST to localhost (cross-site request forgery), and a
+# hostile DNS name pointed at 127.0.0.1 could load the map as its own page (DNS
+# rebinding). Three checks close both:
+#   - Host must be this map's own address (localhost or 127.0.0.1 on MAP_PORT);
+#   - a POST must carry an Origin of that same address;
+#   - a POST must carry RUN_HEADER. A plain HTML form cannot add headers, and a
+#     script on another site that adds one needs a CORS preflight, which this
+#     server never approves.
+RUN_HEADER = "X-Clinic-Map"
+
+
+def allowed_hosts(port):
+    return {f"{name}:{port}" for name in ("localhost", "127.0.0.1", "[::1]")}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ClinicMap/1.0"
     engine = None  # set in main()
+    hosts = allowed_hosts(8080)  # set in main(), from the published port
 
     def log_message(self, fmt, *args):
         pass  # requests are not interesting; jobs and errors are logged instead
@@ -732,18 +767,30 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _host_ok(self):
+        return (self.headers.get("Host") or "").lower() in self.hosts
+
+    def _forbidden(self):
+        return self._send(HTTPStatus.FORBIDDEN, {"error": "forbidden"})
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path == "/healthz":
+            return self._send(HTTPStatus.OK, b"ok\n", "text/plain")
+        if not self._host_ok():
+            return self._forbidden()
         if path == "/api/events":
             return self._events()
         if path == "/api/state":
             return self._send(HTTPStatus.OK, self.engine.snapshot())
-        if path == "/healthz":
-            return self._send(HTTPStatus.OK, b"ok\n", "text/plain")
         return self._static(path)
 
     def do_POST(self):
         path = self.path.split("?", 1)[0]
+        origin = (self.headers.get("Origin") or "").lower().removeprefix("http://")
+        if not self._host_ok() or origin not in self.hosts or self.headers.get(RUN_HEADER) != "run":
+            log(f"refused POST {path}: host={self.headers.get('Host')!r} origin={self.headers.get('Origin')!r}")
+            return self._forbidden()
         name = path.removeprefix("/api/run/")
         if not path.startswith("/api/run/") or name not in JOBS:
             return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -793,11 +840,14 @@ def main():
     # waits in the queue while the lab's state is read, instead of being refused.
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
+    # In the container the server listens on 8080 and Docker publishes it on
+    # MAP_PORT; the browser's Host and Origin carry the published port.
+    public = os.environ.get("MAP_PORT", args.port)
+    Handler.hosts = allowed_hosts(public)
     engine = Engine(lab.RUN)
     engine.load()
     Handler.engine = engine
     threading.Thread(target=engine.pump, daemon=True).start()
-    public = os.environ.get("MAP_PORT", args.port)
     log(f"clinic map for lab '{lab.LAB}' on http://localhost:{public}")
     try:
         server.serve_forever()

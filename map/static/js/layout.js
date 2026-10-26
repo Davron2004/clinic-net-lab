@@ -5,12 +5,13 @@
 // office) to the left. Every zone connects to the router through its own
 // port, which is the whole point of segmentation: traffic between zones has
 // to pass the firewall. The flat "before" network keeps every machine in the
-// same place but removes the zones, and the router moves aside, so traffic
-// between machines visibly goes straight from one to the other.
+// same place but removes the zones: every machine is wired to one switch in
+// the middle, and the router moves to the outside wall, where it only links
+// the clinic to the internet. Nothing stands between two machines inside.
 //
 // All numbers are SVG user units; the SVG scales to fit its box.
 
-export const CARD = { w: 104, h: 100 };
+export const CARD = { w: 104, h: 110 };
 
 const G = {
   cardGap: 10,
@@ -23,6 +24,7 @@ const G = {
   buildingHead: 40,
   router: { w: 320, h: 84 },
   flatRouter: { w: 110, h: 96 },
+  flatSwitch: { minW: 330, h: 70, portStep: 40, portInset: 46 },
   outsideGap: 124, // room for the flat network's router, which sits on the wall
   outsideStackGap: 40,
   margin: 22,
@@ -160,9 +162,9 @@ function rowWidth(zones) {
   return zones.reduce((s, z) => s + z.w, 0) + Math.max(0, zones.length - 1) * G.zoneGap;
 }
 
-function spreadPorts(n, center, span) {
+function spreadPorts(n, center, span, maxStep = 64) {
   if (n <= 1) return [center];
-  const step = Math.min(64, span / (n - 1));
+  const step = Math.min(maxStep, span / (n - 1));
   return Array.from({ length: n }, (_, i) => center + (i - (n - 1) / 2) * step);
 }
 
@@ -233,24 +235,45 @@ export function computeLayout(topology, aspect) {
   for (const z of outs) router.ports[z.id] = router.wan;
 
   // The flat network's router sits on the outside wall: it only links the
-  // office to the internet. Every machine is further in than its inner edge,
-  // so connections drawn straight between machines never pass behind it.
+  // office to the internet, through one cable to the switch.
   const F = G.flatRouter;
   const fx = bx - F.w / 2;
-  const flatRouter = { x: fx, y: routerCy - F.h / 2, w: F.w, h: F.h, cx: fx + F.w / 2, cy: routerCy, ports: {} };
-  const flatTop = { x: flatRouter.cx, y: flatRouter.y, n: NORMAL.up };
-  const flatBottom = { x: flatRouter.cx, y: flatRouter.y + F.h, n: NORMAL.down };
-  for (const z of top) flatRouter.ports[z.id] = flatTop;
-  for (const z of bottom) flatRouter.ports[z.id] = flatBottom;
+  const flatRouter = { x: fx, y: routerCy - F.h / 2, w: F.w, h: F.h, cx: fx + F.w / 2, cy: routerCy };
   flatRouter.wan = { x: fx, y: routerCy, n: NORMAL.left };
-  for (const z of outs) flatRouter.ports[z.id] = flatRouter.wan;
+  flatRouter.lan = { x: fx + F.w, y: routerCy, n: NORMAL.right };
+
+  // The flat network's one switch, where the segmented firewall would be.
+  // Each machine above it plugs into its top edge, each machine below into
+  // its bottom edge, in the same left-to-right order, so no cables cross.
+  const S = G.flatSwitch;
+  const above = top.flatMap((z) => z.nodes.map((n) => nodes[n.id])).sort((a, b) => a.cx - b.cx);
+  const below = bottom.flatMap((z) => z.nodes.map((n) => nodes[n.id])).sort((a, b) => a.cx - b.cx);
+  const most = Math.max(above.length, below.length, 1);
+  const sw = Math.max(S.minW, (most - 1) * S.portStep + 2 * S.portInset);
+  const flatSwitch = { x: bcx - sw / 2, y: routerCy - S.h / 2, w: sw, h: S.h, cx: bcx, cy: routerCy, ports: {}, zonePorts: {} };
+  flatSwitch.west = { x: flatSwitch.x, y: routerCy, n: NORMAL.left };
+  const plug = (list, edgeY, n) => spreadPorts(list.length, bcx, sw - 2 * S.portInset).forEach((px, i) => {
+    flatSwitch.ports[list[i].id] = { x: px, y: edgeY, n };
+  });
+  plug(above, flatSwitch.y, NORMAL.up);
+  plug(below, flatSwitch.y + S.h, NORMAL.down);
+  // An unknown machine in a zone (a new DHCP guest) uses the middle of its
+  // zone's ports.
+  for (const z of [...top, ...bottom]) {
+    const ps = z.nodes.map((n) => flatSwitch.ports[n.id]);
+    flatSwitch.zonePorts[z.id] = {
+      x: ps.length ? ps.reduce((sum, p) => sum + p.x, 0) / ps.length : bcx,
+      y: z.face === 'down' ? flatSwitch.y : flatSwitch.y + S.h,
+      n: NORMAL[z.face === 'down' ? 'up' : 'down'],
+    };
+  }
 
   // Fit the drawing to the box it is shown in, centred.
   const vbW = Math.max(W0, H0 * aspect);
   const vbH = Math.max(H0, W0 / aspect);
   const viewBox = { x: -(vbW - W0) / 2, y: -(vbH - H0) / 2, w: vbW, h: vbH };
 
-  return { viewBox, building, zones, nodes, router, flatRouter, band, rows: { top, bottom, outside: outs } };
+  return { viewBox, building, zones, nodes, router, flatRouter, flatSwitch, band, rows: { top, bottom, outside: outs } };
 }
 
 // ------------------------------------------------------------------ paths
@@ -314,14 +337,23 @@ function trunkBack(port, gate, gn) {
 // Static wiring drawn under everything: machine to zone, zone to router.
 export function wires(L, variant) {
   const out = [];
-  const R = variant === 'flat' ? L.flatRouter : L.router;
+  const flat = variant === 'flat';
+  if (flat) {
+    // Every machine inside on its own cable to the one switch.
+    for (const [id, port] of Object.entries(L.flatSwitch.ports)) {
+      const node = L.nodes[id];
+      out.push({ kind: 'wire', zone: node.zone, d: `M ${pt(node.attach)} ${flatCable(node.attach, NORMAL[node.face], port)}` });
+    }
+    out.push({ kind: 'trunk', zone: null, d: `M ${pt(L.flatSwitch.west)} ${straight(L.flatRouter.lan)}` });
+  }
   for (const z of Object.values(L.zones)) {
     const n = NORMAL[z.face];
-    // In the flat network, machines inside are not wired through zones.
-    if (variant === 'flat' && z.face !== 'right') continue;
+    // In the flat network, machines inside are wired to the switch (above).
+    if (flat && z.face !== 'right') continue;
     // Remote machines that come in over the VPN get a tunnel, not a plain link.
-    const vpn = variant !== 'flat' && z.face === 'right' && z.nodes.some((node) => node.vpn);
-    out.push({ kind: 'trunk', vpn, zone: z.id, d: `M ${pt(z.gate)} ${trunk(z.gate, n, R.ports[z.id])}` });
+    const vpn = !flat && z.face === 'right' && z.nodes.some((node) => node.vpn);
+    const port = flat ? L.flatRouter.wan : L.router.ports[z.id];
+    out.push({ kind: 'trunk', vpn, zone: z.id, d: `M ${pt(z.gate)} ${trunk(z.gate, n, port)}` });
     for (const node of z.nodes) {
       const e = endpoint(L, node.id);
       out.push({ kind: 'wire', zone: z.id, d: `M ${pt(e.at)} ${wireUp(e)}` });
@@ -338,8 +370,8 @@ export function connectionPath(L, variant, from, to, route) {
   const a = endpoint(L, from);
   const b = endpoint(L, to);
   if (!a || !b) return null;
-  const flat = variant === 'flat';
-  const R = flat ? L.flatRouter : L.router;
+  if (variant === 'flat' && route !== 'outside') return flatPath(L, a, b, route);
+  const R = L.router;
   const segs = [];
   let start;
   let stopAfter;
@@ -352,10 +384,8 @@ export function connectionPath(L, variant, from, to, route) {
       start = portB;
     } else {
       start = a.at;
-      if (a.kind === 'node' && !(flat && a.zone.inside)) segs.push(wireUp(a));
-      const from0 = flat && a.zone.inside ? a.at : a.zone.gate;
-      const fromN = flat && a.zone.inside ? a.n : NORMAL[a.zone.face];
-      segs.push(trunk(from0, fromN, portA));
+      if (a.kind === 'node') segs.push(wireUp(a));
+      segs.push(trunk(a.zone.gate, NORMAL[a.zone.face], portA));
     }
     stopAfter = segs.length;
     if (b.kind === 'router') {
@@ -366,10 +396,8 @@ export function connectionPath(L, variant, from, to, route) {
       const k = Math.max(R.h * 0.55, Math.abs(portA.x - portB.x) * 0.25);
       segs.push(curve(portA, neg(portA.n), portB, neg(portB.n), k));
     }
-    const toN = flat && b.zone.inside ? b.n : NORMAL[b.zone.face];
-    const to0 = flat && b.zone.inside ? b.at : b.zone.gate;
-    segs.push(trunkBack(portB, to0, toN));
-    if (b.kind === 'node' && !(flat && b.zone.inside)) segs.push(wireDown(b));
+    segs.push(trunkBack(portB, b.zone.gate, NORMAL[b.zone.face]));
+    if (b.kind === 'node') segs.push(wireDown(b));
     return { segments: segs, start, stopAfter, end: b.at, endKind: b.kind, endNormal: b.n };
   }
 
@@ -382,11 +410,106 @@ export function connectionPath(L, variant, from, to, route) {
     return { segments: segs, start, stopAfter, end: b.at, endKind: b.kind, endNormal: b.n };
   }
 
-  // Direct: straight from one machine to the other across the flat network
-  // (or between two places outside the clinic).
+  // Between two places outside the clinic: straight from one to the other.
   start = a.at;
   const dist = Math.hypot(b.at.x - a.at.x, b.at.y - a.at.y);
   const k = Math.max(40, Math.min(L.band * 1.25, 30 + dist * 0.32));
   segs.push(curve(a.at, a.n, b.at, b.n, k));
   return { segments: segs, start, stopAfter: segs.length, end: b.at, endKind: b.kind, endNormal: b.n };
+}
+
+// ------------------------------------------------------------------ flat paths
+
+function straight(p) {
+  return `L ${pt(p)}`;
+}
+
+// A machine's cable to its switch port.
+function flatCable(at, n, port) {
+  return curve(at, n, port, port.n, Math.max(14, along(at, port, n) * 0.55));
+}
+
+function flatCableBack(port, at, n) {
+  return curve(port, port.n, at, n, Math.max(14, along(at, port, n) * 0.55));
+}
+
+// From an endpoint to its port on the flat switch. `wall` is how many of the
+// segments reach the router's outside port (where the router stops what
+// comes in from the internet).
+function flatOut(L, e) {
+  const S = L.flatSwitch;
+  const R = L.flatRouter;
+  if (e.kind === 'router') return { start: R.lan, segs: [straight(S.west)], port: S.west };
+  if (e.zone.inside) {
+    const port = e.kind === 'node' ? S.ports[e.node.id] : S.zonePorts[e.zone.id];
+    if (!port) return null;
+    return { start: e.kind === 'node' ? e.at : port, segs: e.kind === 'node' ? [flatCable(e.at, e.n, port)] : [], port };
+  }
+  const segs = [];
+  if (e.kind === 'node') segs.push(wireUp(e));
+  segs.push(trunk(e.zone.gate, NORMAL[e.zone.face], R.wan));
+  const wall = segs.length;
+  segs.push(straight(R.lan), straight(S.west));
+  return { start: e.at, segs, port: S.west, wall };
+}
+
+// From the flat switch to an endpoint. `wall` is how many segments reach the
+// router's inside port (where the router stops what goes out).
+function flatIn(L, e) {
+  const S = L.flatSwitch;
+  const R = L.flatRouter;
+  if (e.kind === 'router') return { port: S.west, segs: [straight(R.lan)], end: R.lan, endNormal: R.lan.n };
+  if (e.zone.inside) {
+    const port = e.kind === 'node' ? S.ports[e.node.id] : S.zonePorts[e.zone.id];
+    if (!port) return null;
+    return {
+      port, segs: e.kind === 'node' ? [flatCableBack(port, e.at, e.n)] : [], end: e.kind === 'node' ? e.at : port, endNormal: e.kind === 'node' ? e.n : port.n,
+    };
+  }
+  const segs = [straight(R.lan)];
+  const wall = segs.length;
+  segs.push(straight(R.wan), trunkBack(R.wan, e.zone.gate, NORMAL[e.zone.face]));
+  if (e.kind === 'node') segs.push(wireDown(e));
+  return { port: S.west, segs, end: e.at, endNormal: e.n, wall };
+}
+
+// The flat network: every connection goes through the one switch. Only
+// traffic to or from outside meets the router, and the router is the only
+// thing that can stop it; inside, a refused connection runs all the way to
+// the machine that refused it.
+function flatPath(L, a, b, route) {
+  const R = L.flatRouter;
+  const outside = (e) => e.kind !== 'router' && !e.zone.inside;
+  if (outside(a) && b.kind === 'router') {
+    // From the internet to the clinic's own address: ends at the router.
+    const segs = [];
+    if (a.kind === 'node') segs.push(wireUp(a));
+    segs.push(trunk(a.zone.gate, NORMAL[a.zone.face], R.wan));
+    return { segments: segs, start: a.at, stopAfter: segs.length, end: R.wan, endKind: 'router', endNormal: R.wan.n };
+  }
+  if (a.kind === 'router' && outside(b)) {
+    const segs = [trunkBack(R.wan, b.zone.gate, NORMAL[b.zone.face])];
+    if (b.kind === 'node') segs.push(wireDown(b));
+    return { segments: segs, start: R.wan, stopAfter: segs.length, end: b.at, endKind: b.kind, endNormal: b.n };
+  }
+  const out = flatOut(L, a);
+  const into = flatIn(L, b);
+  if (!out || !into) return null;
+  const segs = [...out.segs];
+  if (out.port !== into.port) {
+    // Across the switch, hidden under it on screen.
+    const P = out.port;
+    const Q = into.port;
+    const k = L.flatSwitch.h * (P.n === Q.n ? 0.7 : 0.5);
+    segs.push(curve(P, neg(P.n), Q, neg(Q.n), k));
+  }
+  const toSwitch = segs.length;
+  segs.push(...into.segs);
+  let stopAfter = segs.length;
+  if (route === 'router') {
+    if (out.wall !== undefined) stopAfter = out.wall;
+    else if (into.wall !== undefined) stopAfter = toSwitch + into.wall;
+  }
+  const endKind = b.kind === 'router' ? 'router' : b.kind;
+  return { segments: segs, start: out.start, stopAfter, end: into.end, endKind, endNormal: into.endNormal };
 }

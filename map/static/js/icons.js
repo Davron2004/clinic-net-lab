@@ -17,6 +17,8 @@ const PATHS = {
   shieldCheck: '<path d="M12 21.5s8-3.6 8-9.8V5.2L12 2.5 4 5.2v6.5c0 6.2 8 9.8 8 9.8z"/><path d="m8.8 12 2.2 2.2 4.4-4.4"/>',
   router: '<rect x="2.5" y="13" width="19" height="7.5" rx="2"/><path d="M6.5 16.75h.01M10 16.75h.01M15.5 13V9.5"/><path d="M12.6 7.2a4.2 4.2 0 0 1 5.8 0M10.5 5a7.2 7.2 0 0 1 10 0"/>',
   radar: '<circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19.1 4.9a10 10 0 0 1 0 14.2M4.9 19.1a10 10 0 0 1 0-14.2"/>',
+  switch: '<rect x="2.5" y="7" width="19" height="10" rx="2"/><path d="M6 12h.01M9.33 12h.01M12.67 12h.01M16 12h.01M6 4v3M12 4v3M18 4v3M6 17v3M12 17v3M18 17v3"/>',
+  help: '<circle cx="12" cy="12" r="9.5"/><path d="M9.4 9.2a2.7 2.7 0 0 1 5.2 1c0 1.8-2.6 2.4-2.6 4M12 17.3h.01"/>',
   key: '<circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.8-9.8M17 6l3 3M14.5 8.5l2 2"/>',
   device: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9z"/>',
   check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',

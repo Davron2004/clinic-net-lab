@@ -5,7 +5,7 @@ import { installSprite } from './icons.js';
 import { Scene } from './scene.js';
 import { Flows } from './flows.js';
 import {
-  AlertsCard, Banner, Captions, Header, RecordsCard, Status, TestsCard, Toasts,
+  AlertsCard, Banner, Captions, Header, RecordsCard, Status, TestsCard, Toasts, isError, recordsEncrypted,
 } from './panels.js';
 import { plural } from './words.js';
 
@@ -73,6 +73,7 @@ function rebuild(force = false) {
   app.lastVariant = topo.variant;
   flows.reset();
   scene.build(topo, aspect);
+  placeToasts();
   scene.setCounters(app.state.counters || {});
   refreshBadges();
   if (variantChanged) {
@@ -80,10 +81,53 @@ function rebuild(force = false) {
   }
 }
 
+// Toasts live under the outside world, left of the clinic's wall: line the
+// column up with the outside zones, and stop it short of the zone above.
+function placeToasts() {
+  const L = scene.layout;
+  const outs = L?.rows.outside || [];
+  const box = canvas.getBoundingClientRect();
+  if (!outs.length) {
+    toasts.place({ left: 16, width: 268, bottom: 6, maxHeight: box.height / 3 });
+    return;
+  }
+  const k = box.width / L.viewBox.w;
+  const px = (x) => (x - L.viewBox.x) * k;
+  const py = (y) => (y - L.viewBox.y) * k;
+  const left = px(Math.min(...outs.map((z) => z.x)));
+  const right = px(L.building.x) - 14;
+  const bottom = box.height - py(L.building.y + L.building.h);
+  const top = py(Math.max(...outs.map((z) => z.y + z.h))) + 14;
+  toasts.place({ left, width: right - left, bottom, maxHeight: box.height - bottom - top });
+}
+
+// A toast has room for a short headline. Alert titles from the monitor put
+// the evidence first and the meaning after a colon ("Imaging workstation
+// was blocked 10 times in 30 seconds: scanning the network or malware
+// spreading"), or the meaning in brackets at the end. The meaning is the
+// headline; the full title stays in the alerts list.
+function toastCopy(group) {
+  const where = group.where ? nodeLabel(group.where) : '';
+  const title = group.title;
+  const cap = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+  const colon = title.indexOf(': ');
+  if (colon > 0) {
+    const meaning = title.slice(colon + 2).trim();
+    // "Patient record deleted: patient-0003.json": a file name is not a meaning.
+    if (/\s/.test(meaning)) return { title: cap(meaning), text: where || title.slice(0, colon) };
+  }
+  const bracket = title.match(/^(.*\S)\s*\(([^)]+)\)$/);
+  if (bracket) return { title: bracket[1], text: cap(bracket[2]) };
+  return { title, text: where };
+}
+
 let resizeTimer = 0;
 new ResizeObserver(() => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => rebuild(), 120);
+  resizeTimer = setTimeout(() => {
+    rebuild();
+    placeToasts();
+  }, 120);
 }).observe(canvas);
 
 // Badges pinned on machines: records locked > infected > recent alert.
@@ -121,6 +165,10 @@ function busy() {
   return null;
 }
 
+function runState(s, job) {
+  return job === 'attack' ? s.scenario : s.tests;
+}
+
 function updateStatus() {
   const s = app.state;
   header.setBusy(busy());
@@ -130,8 +178,11 @@ function updateStatus() {
   } else if (s?.scenario?.running) {
     const sc = s.scenario;
     const open = sc.breaches ? `, <b>${sc.breaches} got through</b>` : '';
-    status.set('attack', `Ransomware on the ${nodeLabel(sc.node)} is trying every path · ${sc.attempts} tried${open}`);
-  } else if (s?.job?.name) {
+    const paths = sc.planned ? `${sc.planned} common attack paths` : 'common attack paths';
+    status.set('attack', `Ransomware on the ${nodeLabel(sc.node)} tries ${paths} · ${sc.attempts} tried${open}`);
+  } else if (s?.job?.name && !(runState(s, s.job.name)?.ts >= s.job.started)) {
+    // Started from the page, not reporting yet. (Once the run has ended,
+    // the program may take a moment to exit: no "Starting" then.)
     status.set(s.job.name === 'attack' ? 'attack' : 'tests', 'Starting…');
   } else {
     status.set(null);
@@ -143,7 +194,12 @@ function testsBanner(summary) {
   const v = summary.violations?.length || 0;
   const b = summary.broken?.length || 0;
   const flowsDef = app.state.topology.flows;
-  if (!v && !b) {
+  const results = app.state.tests?.results || {};
+  const errors = flowsDef.filter((f) => isError(results[f.id])).length;
+  if (!v && !b && errors) {
+    banner.show('info', `${plural(errors, 'connection')} could not be tested`,
+      `No violations among the other ${summary.total - errors}. Run the tests again to check the rest.`);
+  } else if (!v && !b) {
     const allowed = flowsDef.filter((f) => f.expect === 'allow').length;
     banner.show('ok', `All ${summary.total} connections behave as the policy says`,
       `${allowed} needed connections work. ${summary.total - allowed} forbidden ones are blocked.`);
@@ -163,13 +219,21 @@ function scenarioBanner(result) {
   const rec = result.records || {};
   const open = result.attempts - result.blocked;
   if (!result.breaches && !result.encrypted) {
+    const intact = rec.total && rec.intact === rec.total ? `All ${rec.total} records intact.` : `Patient records: ${rec.intact ?? '?'} of ${rec.total ?? '?'} intact.`;
     banner.show('ok', 'Attack contained',
-      `The firewall blocked ${result.blocked} of ${result.attempts} paths${open ? ' (the one left open is its everyday job)' : ''}. `
-      + `Patient records: ${rec.intact ?? '?'} of ${rec.total ?? '?'} intact.`, 12);
+      `Blocked ${result.blocked} of ${result.attempts} paths${open ? (open === 1 ? '; the open one is its everyday job' : '') : ''}. ${intact}`, 12);
+  } else if (result.encrypted) {
+    banner.show('bad', 'Ransomware reached the patient records',
+      `${open} of ${result.attempts} paths were open. ${plural(result.encrypted, 'record')} encrypted.`, 12);
+  } else if (rec.total && rec.intact < rec.total && recordsEncrypted(rec)) {
+    // A repeat run: the records were encrypted by an earlier attack, so
+    // there was nothing left to encrypt this time.
+    const lost = rec.total - rec.intact;
+    banner.show('bad', 'Ransomware reached the patient records',
+      `${open} of ${result.attempts} paths were open. ${lost === rec.total ? `All ${lost}` : lost} ${lost === 1 ? 'record was' : 'records were'} already encrypted.`, 12);
   } else {
-    banner.show('bad', result.encrypted ? 'Ransomware reached the patient records' : 'Ransomware got through',
-      `${open} of ${result.attempts} paths were open. `
-      + `${result.encrypted ? `${plural(result.encrypted, 'record')} encrypted` : `Patient records: ${rec.intact ?? '?'} of ${rec.total ?? '?'} intact`}.`, 12);
+    banner.show('bad', 'Ransomware got through',
+      `${open} of ${result.attempts} paths were open. Patient records: ${rec.intact ?? '?'} of ${rec.total ?? '?'} intact.`, 12);
   }
 }
 
@@ -241,13 +305,13 @@ function handle(msg) {
       // The test suite sets off alerts on purpose (that is the monitor
       // working). They go in the list, without pop-ups or flashing machines.
       if (a.during === 'test') break;
-      const where = group.where;
+      const copy = toastCopy(group);
       toasts.show({
         kind: group.level >= 12 ? 'critical' : 'alert',
         key: group.key,
         count: group.count,
-        title: group.title,
-        text: where ? nodeLabel(where) : '',
+        title: copy.title,
+        text: copy.text,
         seconds: group.level >= 15 ? 12 : 7,
         level: group.level,
       });
@@ -299,8 +363,12 @@ async function run(name) {
   if (busy()) return;
   header.setBusy(name);
   try {
-    const r = await fetch(`/api/run/${name}`, { method: 'POST' });
-    if (r.status === 409) {
+    // The server only accepts a run with this header (see RUN_HEADER in server.py).
+    const r = await fetch(`/api/run/${name}`, { method: 'POST', headers: { 'X-Clinic-Map': 'run' } });
+    if (r.status === 403) {
+      toasts.show({ kind: 'error', title: 'The map refused to start it', text: `Open the map at http://localhost:${location.port || 80}.`, level: 99 });
+      header.setBusy(busy());
+    } else if (r.status === 409) {
       toasts.show({ kind: 'error', title: 'Something is already running', text: 'Wait for it to finish, then try again.', level: 99 });
     } else if (!r.ok) {
       throw new Error(`HTTP ${r.status}`);
