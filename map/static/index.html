@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Clinic network</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21.5s8-3.6 8-9.8V5.2L12 2.5 4 5.2v6.5c0 6.2 8 9.8 8 9.8z"/><path d="M12 8v7M8.5 11.5h7"/></svg>
+        </span>
+        <div class="brand-text">
+          <h1>Clinic network</h1>
+          <p>Live map of the lab</p>
+        </div>
+      </div>
+      <div class="variant" id="variant" data-variant="clinic"></div>
+      <div class="topbar-spacer"></div>
+      <div class="conn" id="conn" data-state="connecting" role="status">
+        <span class="conn-dot" aria-hidden="true"></span><span class="conn-text">Connecting…</span>
+      </div>
+      <div class="actions">
+        <button class="btn" id="btn-tests" type="button"></button>
+        <button class="btn btn--danger" id="btn-attack" type="button"></button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="stage" aria-label="Network map">
+        <div class="stage-head">
+          <ul class="legend" aria-label="Legend">
+            <li class="legend-item legend-item--allowed">
+              <svg class="legend-line" viewBox="0 0 34 12" aria-hidden="true"><path d="M2 6h22"/><circle cx="27" cy="6" r="4"/></svg>
+              Allowed
+            </li>
+            <li class="legend-item legend-item--blocked">
+              <svg class="legend-line" viewBox="0 0 34 12" aria-hidden="true"><path d="M2 6h16"/><path class="legend-wall" d="M24 1v10"/><path class="legend-x" d="M27.5 3.5l5 5M32.5 3.5l-5 5"/></svg>
+              Blocked
+            </li>
+            <li class="legend-item legend-item--violation">
+              <svg class="legend-line" viewBox="0 0 34 12" aria-hidden="true"><path class="legend-dash" d="M2 6h22"/><circle cx="27" cy="6" r="4"/></svg>
+              Got through, should be blocked
+            </li>
+          </ul>
+          <div class="status" id="status" role="status" aria-live="polite"></div>
+        </div>
+        <div class="canvas" id="canvas">
+          <svg id="map" role="img" aria-label="Map of the clinic network: zones, machines and the firewall between them" preserveAspectRatio="xMidYMid meet"></svg>
+          <div class="banner" id="banner" role="status" aria-live="polite" hidden></div>
+          <div class="toasts" id="toasts" aria-live="polite"></div>
+        </div>
+        <ol class="captions" id="captions" aria-live="off" aria-label="Latest connections"></ol>
+      </section>
+
+      <aside class="sidebar" aria-label="Status">
+        <section class="card" id="records-card" aria-label="Patient records"></section>
+        <section class="card" id="tests-card" aria-label="Isolation tests"></section>
+        <section class="card card--grow" id="alerts-card" aria-label="Alerts"></section>
+      </aside>
+    </main>
+  </div>
+</body>
+</html>
