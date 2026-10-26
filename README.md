@@ -7,6 +7,8 @@ only flows where it should.
 
 Everything runs in containers on one laptop. You need Docker and nothing else.
 
+**[Watch the 80-second demo](https://github.com/Davron2004/clinic-net-lab/releases/download/v1.0/clinic-net-lab-demo.mp4)**: the same ransomware attack on a flat network and on this one.
+
 ![The clinic map during a simulated ransomware attack on the segmented network](docs/img/map-segmented-attack.png)
 
 ## The short version
