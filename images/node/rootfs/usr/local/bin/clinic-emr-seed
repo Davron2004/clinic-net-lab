@@ -1,29 +1,22 @@
 #!/usr/bin/env python3
-"""Writes a dozen synthetic patient charts. Names are invented; IDs are fake."""
+"""Writes a dozen synthetic patient charts. Names are invented; IDs are fake.
+
+The patient list lives in /usr/local/share/clinic/patients.json so the imaging
+workstation and the lab analyzer produce studies and results for the same
+(synthetic) people the EMR knows.
+"""
 import json
 import os
 import sys
 
-PATIENTS = [
-    ("Avery Holt", "1961-04-12", "Hypertension follow-up"),
-    ("Jordan Pike", "1987-09-30", "Annual physical"),
-    ("Morgan Ellery", "1954-01-08", "Type 2 diabetes review"),
-    ("Riley Danvers", "1999-06-21", "Sprained ankle, X-ray ordered"),
-    ("Casey Whitlow", "1972-11-03", "Lipid panel results"),
-    ("Taylor Brennick", "2010-02-17", "Asthma action plan"),
-    ("Quinn Marlow", "1948-07-25", "Chest X-ray, cough 3 weeks"),
-    ("Sasha Okafor", "1990-12-11", "Prenatal visit, ultrasound"),
-    ("Drew Kessler", "1983-03-29", "Migraine consult"),
-    ("Robin Vale", "1966-08-14", "Thyroid function tests"),
-    ("Emerson Tull", "1977-05-06", "Knee pain, imaging review"),
-    ("Parker Lindqvist", "2001-10-19", "Travel vaccines"),
-]
+with open("/usr/local/share/clinic/patients.json") as f:
+    PATIENTS = json.load(f)
 
 out = sys.argv[1]
-for i, (name, dob, note) in enumerate(PATIENTS, start=1):
+for i, p in enumerate(PATIENTS, start=1):
     path = os.path.join(out, f"patient-{i:04d}.json")
     if os.path.exists(path):
         continue
     with open(path, "w") as f:
-        json.dump({"mrn": f"SYN-{100000 + i}", "name": name, "dob": dob,
-                   "last_visit_note": note, "synthetic": True}, f, indent=2)
+        json.dump({"mrn": p["mrn"], "name": p["name"], "dob": p["dob"],
+                   "last_visit_note": p["note"], "synthetic": True}, f, indent=2)

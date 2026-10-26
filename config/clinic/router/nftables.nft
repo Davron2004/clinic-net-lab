@@ -6,7 +6,7 @@
 # and one service. Every allowed new connection and every drop is logged
 # (NFLOG group 0 -> ulogd -> firewall.jsonl); the prefix is the rule's name.
 #
-# The isolation tests in policy/flows.yml check this file from the outside.
+# The isolation tests in policy/clinic.yml check this file from the outside.
 # They are written separately on purpose: if a rule here is wrong, the
 # tests catch it instead of inheriting the same mistake.
 
@@ -18,12 +18,15 @@ define SERVERS  = "eth2.20"
 define DEVICES  = "eth2.30"
 define PRINTERS = "eth2.40"
 define GUEST    = "eth2.50"
+define VPN      = "wg0"       # remote access tunnel (WireGuard, 10.10.60.0/24)
+define SECURITY = "eth2.90"
 
 define EMR           = 10.10.20.10
 define PACS          = 10.10.20.20
 define IMAGING       = 10.10.30.10
 define LAB_ANALYZER  = 10.10.30.11
 define PRINTER       = 10.10.40.10
+define SIEM          = 10.10.90.10
 
 table inet clinic {
 
@@ -35,12 +38,16 @@ table inet clinic {
         ct state invalid drop
 
         # Ping the gateway from inside: basic troubleshooting.
-        iifname { $STAFF, $SERVERS, $DEVICES, $PRINTERS, $GUEST } icmp type echo-request accept
+        iifname { $STAFF, $SERVERS, $DEVICES, $PRINTERS, $GUEST, $SECURITY } icmp type echo-request accept
         # DNS for zones that browse by name. Devices and printers get none:
         # DNS queries can smuggle data out, and they only need fixed IPs.
         iifname { $STAFF, $SERVERS, $GUEST } meta l4proto { tcp, udp } th dport 53 accept
         # DHCP leases for guest Wi-Fi.
         iifname $GUEST udp dport 67 accept
+        # The VPN's front door: the only thing the internet may send the
+        # router. WireGuard answers nothing but a valid handshake from an
+        # enrolled key, so to a scanner this port looks closed.
+        iifname $WAN udp dport 51820 log group 0 prefix "allow:vpn-handshake" accept
 
         log group 0 prefix "deny:to-router" drop
     }
@@ -58,7 +65,9 @@ table inet clinic {
             $DEVICES  : jump from_devices,
             $PRINTERS : jump from_printers,
             $GUEST    : jump from_guest,
+            $SECURITY : jump from_security,
             $WAN      : jump from_internet,
+            $VPN      : jump from_remote,
         }
         log group 0 prefix "deny:default" drop
     }
@@ -72,7 +81,10 @@ table inet clinic {
     }
 
     chain from_servers {
-        # Servers start no connections of their own. Replies are handled above.
+        # Servers start no connections of their own, with one exception: the
+        # EMR server's security agent reports to the SIEM (1514 events,
+        # 1515 enrollment). Replies are handled above.
+        ip saddr $EMR ip daddr $SIEM tcp dport { 1514, 1515 } log group 0 prefix "allow:emr-siem" accept
         oifname $WAN log group 0 prefix "deny:server-internet" drop
         log group 0 prefix "deny:servers" drop
     }
@@ -95,6 +107,24 @@ table inet clinic {
         # Guests get the web and nothing inside the clinic.
         oifname $WAN tcp dport { 80, 443 } log group 0 prefix "allow:guest-web" accept
         log group 0 prefix "deny:guest" drop
+    }
+
+    chain from_remote {
+        # A doctor working from home, through the VPN. The tunnel proves who
+        # they are; this chain decides what that buys them: the EMR web app
+        # and nothing else. No file shares, no admin shells, no staff PCs, no
+        # image archive, and no using the clinic as a route to the internet.
+        ip daddr $EMR tcp dport 443 log group 0 prefix "allow:remote-emr-https" accept
+        oifname $WAN log group 0 prefix "deny:remote-internet" drop
+        log group 0 prefix "deny:remote" drop
+    }
+
+    chain from_security {
+        # The SIEM only listens: agents connect to it, it connects to nothing.
+        # (The router's own agent talks to it directly from 10.10.90.1; the
+        # router's own traffic does not pass through this forward chain.)
+        oifname $WAN log group 0 prefix "deny:siem-internet" drop
+        log group 0 prefix "deny:security" drop
     }
 
     chain from_internet {

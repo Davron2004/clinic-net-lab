@@ -1,0 +1,16 @@
+<!--
+  Router: ship the firewall log to the SIEM.
+  Each line of firewall.jsonl is one logged packet (written by ulogd, see
+  clinic-router), already JSON, so the SIEM can read its fields directly.
+  only-future-events="no": read the file from the start. It is fresh for
+  every deployment, so this also delivers what the firewall logged while the
+  agent was still enrolling, instead of silently skipping it.
+-->
+<ossec_config>
+  <syscheck><disabled>yes</disabled></syscheck>
+  <localfile>
+    <log_format>json</log_format>
+    <location>/var/log/clinic/firewall.jsonl</location>
+    <only-future-events>no</only-future-events>
+  </localfile>
+</ossec_config>

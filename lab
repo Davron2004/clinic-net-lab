@@ -6,13 +6,19 @@
 #   ./lab test          run the isolation test suite against the running lab
 #   ./lab attack        ransomware scenario: infected imaging workstation
 #   ./lab map           (re)start the clinic map at http://localhost:8080
+#   ./lab traffic on|off  routine clinic traffic in the background (on by default)
 #   ./lab status        show machines and whether they are ready
 #   ./lab shell <node>  open a shell on a machine (e.g. ./lab shell router)
 #   ./lab down          stop everything
 #
 # Environment: CLINIC_LAB (lab name, default clinic), MAP_PORT (default 8080),
 # CLINIC_IMAGE_TAG (tag for locally built images, default dev). Use different
-# values to run several labs side by side.
+# values to run several labs side by side. CLINIC_TRAFFIC=0 starts the lab
+# without routine background traffic.
+# CLINIC_MONITORING=0 runs without the SIEM (Wazuh): boots faster, uses
+# ~350 MB less memory and skips the 2.7 GB Wazuh image.
+# CLINIC_MONITORING_WAIT (default 180) caps how many seconds ./lab up waits
+# for the SIEM before carrying on without it.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -24,6 +30,11 @@ TAG=${CLINIC_IMAGE_TAG:-dev}
 NODE_IMAGE=clinic-net-lab/node:$TAG
 TOOLBOX_IMAGE=clinic-net-lab/toolbox:$TAG
 MAP_CONTAINER="clinic-map-$LAB"
+TRAFFIC_CONTAINER="clinic-traffic-$LAB"
+MONITORING=${CLINIC_MONITORING:-1}
+MONITORING_WAIT=${CLINIC_MONITORING_WAIT:-180}
+# With monitoring off, the SIEM machine runs the plain node image.
+if [ "$MONITORING" = "0" ]; then SIEM_IMAGE=node; else SIEM_IMAGE=siem; fi
 
 say()  { printf '\033[1m==> %s\033[0m\n' "$*"; }
 fail() { printf '\033[31merror: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -38,6 +49,7 @@ clab() {
         -v /var/run/netns:/var/run/netns \
         -v "$ROOT:$ROOT" -w "$ROOT/topologies" \
         -e CLINIC_IMAGE_TAG="$TAG" \
+        -e CLINIC_MONITORING="$MONITORING" -e CLINIC_SIEM_IMAGE="$SIEM_IMAGE" \
         "$CLAB_IMAGE" containerlab "$@"
 }
 
@@ -61,6 +73,8 @@ build() {
     for dir in "$ROOT"/images/*/; do
         name=$(basename "$dir")
         case "$name" in node|toolbox) continue ;; esac
+        # The SIEM image is large (Wazuh); skip it when monitoring is off.
+        if [ "$name" = siem ] && [ "$MONITORING" = "0" ]; then continue; fi
         docker build -q -t "clinic-net-lab/$name:$TAG" --build-arg "TAG=$TAG" "$dir" >/dev/null
     done
 }
@@ -96,6 +110,37 @@ wait_ready() {
     echo "    $(lab_nodes | wc -l | tr -d ' ') machines ready"
 }
 
+# Monitoring is useful but never essential: the clinic works without it. So
+# wait for the SIEM and its agents only for a while, then carry on (its
+# alerts start flowing whenever it gets there).
+wait_monitoring() {
+    [ "$MONITORING" = "0" ] && return 0
+    local node marker watch pending started=$SECONDS deadline=$((SECONDS + MONITORING_WAIT))
+    # Machines with an agent marked themselves while booting.
+    watch="clab-$LAB-siem"
+    for node in $(lab_nodes); do
+        docker exec "$node" test -f /run/clinic/agent-pending 2>/dev/null && watch="$watch $node"
+    done
+    say "Waiting for security monitoring (SIEM and agents, up to ${MONITORING_WAIT}s)"
+    while :; do
+        pending=""
+        for node in $watch; do
+            if [ "$node" = "clab-$LAB-siem" ]; then marker=monitoring-ready; else marker=agent-ready; fi
+            docker exec "$node" test -f "/run/clinic/$marker" 2>/dev/null || pending="$pending ${node#clab-"$LAB"-}"
+        done
+        if [ -z "$pending" ]; then
+            echo "    monitoring ready after $((SECONDS - started))s"
+            return 0
+        fi
+        if [ $SECONDS -ge $deadline ]; then
+            printf '\033[33mwarning: monitoring still starting on:%s. The lab works without it;\n' "$pending"
+            printf '         alerts appear in run/alerts.jsonl once it is up.\033[0m\n'
+            return 0
+        fi
+        sleep 1
+    done
+}
+
 map_start() {
     [ -f "$ROOT/map/server.py" ] || return 0
     docker rm -f "$MAP_CONTAINER" >/dev/null 2>&1 || true
@@ -107,21 +152,44 @@ map_start() {
     say "Clinic map: http://localhost:$MAP_PORT"
 }
 
+# Routine clinic traffic (labkit/traffic.py): ordinary allowed actions every
+# few seconds, so the map shows a working clinic. It pauses by itself while
+# a test or attack runs.
+traffic_start() {
+    docker rm -f "$TRAFFIC_CONTAINER" >/dev/null 2>&1 || true
+    docker run -d --name "$TRAFFIC_CONTAINER" \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -v "$ROOT:$ROOT" -w "$ROOT" \
+        -e CLINIC_LAB="$LAB" -e CLINIC_RUN_DIR="$RUN" \
+        "$TOOLBOX_IMAGE" python labkit/traffic.py >/dev/null
+    say "Routine clinic traffic: on (./lab traffic off, or CLINIC_TRAFFIC=0)"
+}
+traffic_stop() { docker rm -f "$TRAFFIC_CONTAINER" >/dev/null 2>&1 || true; }
+
 up() {
     local variant=${1:-clinic}
     [ -f "$ROOT/topologies/$variant.clab.yml" ] || fail "unknown network '$variant' (use clinic or flat)"
     build
+    traffic_stop
     destroy
     # Fresh run directory: logs, events and results belong to one deployment.
     # Empty it rather than delete it: Docker Desktop's file sharing can keep
     # pointing at a deleted directory, which containers then fail to write to.
-    mkdir -p "$RUN/logs" "$RUN/results"
-    find "$RUN" -mindepth 1 -type f -delete
+    # The cleanup runs in a container because on Linux the files belong to
+    # root (the lab machines wrote them).
+    mkdir -p "$RUN/logs" "$RUN/results" "$RUN/wg" "$RUN/secrets"
+    docker run --rm -v "$RUN:/run-dir" "$TOOLBOX_IMAGE" find /run-dir -mindepth 1 -type f -delete
     echo "$variant" > "$RUN/variant"
+    if [ "$MONITORING" = "0" ]; then echo off; else echo on; fi > "$RUN/monitoring"
+    : > "$RUN/alerts.jsonl"   # the SIEM's alerts for the map (stays empty when off)
+    # Password agents need to enroll with the SIEM: new for every deployment.
+    (umask 077; od -An -N24 -tx1 /dev/urandom | tr -d ' \n' > "$RUN/secrets/authd.pass")
     say "Starting the $variant network"
     clab deploy -t "$variant.clab.yml" --name "$LAB" >/dev/null
     wait_ready
+    wait_monitoring
     map_start
+    if [ "${CLINIC_TRAFFIC:-1}" != 0 ]; then traffic_start; fi
     say "Lab is up. Next: ./lab test"
 }
 
@@ -130,17 +198,26 @@ shift || true
 case "$cmd" in
     up)      up "$@" ;;
     before)  up flat ;;
-    down)    destroy; docker rm -f "$MAP_CONTAINER" >/dev/null 2>&1 || true ;;
+    down)    traffic_stop; destroy; docker rm -f "$MAP_CONTAINER" >/dev/null 2>&1 || true ;;
     build)   build ;;
     test)    toolbox python tests/isolation.py "$@" ;;
     attack)  toolbox python scenarios/ransomware.py "$@" ;;
     map)     map_start ;;
+    traffic) case "${1:-on}" in
+                 on)  traffic_start ;;
+                 off) traffic_stop; say "Routine clinic traffic: off" ;;
+                 *)   fail "usage: ./lab traffic on|off" ;;
+             esac ;;
     status)  for n in $(lab_nodes); do
                  if docker exec "$n" test -f /run/clinic/ready 2>/dev/null; then s=ready; else s=booting; fi
                  printf '  %-28s %s\n' "$n" "$s"
-             done ;;
+             done
+             if [ "$(cat "$RUN/monitoring" 2>/dev/null)" = off ]; then s=off
+             elif docker exec "clab-$LAB-siem" test -f /run/clinic/monitoring-ready 2>/dev/null; then s=ready
+             else s=starting; fi
+             printf '  %-28s %s\n' "monitoring (SIEM)" "$s" ;;
     shell)   [ $# -ge 1 ] || fail "usage: ./lab shell <node>"
              docker exec -it "clab-$LAB-$1" bash ;;
-    help|-h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+    help|-h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' ;;
     *)       fail "unknown command '$cmd' (try ./lab help)" ;;
 esac

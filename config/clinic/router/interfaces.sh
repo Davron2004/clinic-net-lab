@@ -20,3 +20,4 @@ vlan 20 10.10.20.1/24   # servers (EMR, PACS)
 vlan 30 10.10.30.1/24   # medical devices
 vlan 40 10.10.40.1/24   # printers and fax
 vlan 50 10.10.50.1/24   # guest Wi-Fi
+vlan 90 10.10.90.1/24   # security monitoring (SIEM)

@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""DICOM from the imaging workstation's side: send studies, check the archive.
+
+DICOM is both the file format of medical images and the network protocol
+that moves them. A modality (X-ray, ultrasound) opens an "association" with
+the archive (PACS), agrees on what kind of objects it will send, and then
+sends each image with C-STORE. C-ECHO is DICOM's "ping": it proves a real
+DICOM service answered, not just an open TCP port.
+
+    clinic-dicom send <host> [port]           make one synthetic study and C-STORE it
+    clinic-dicom echo <host> [port] [secs]    C-ECHO, exit 0 if the archive answered
+
+Every study is synthetic: invented patients (the same ones the EMR knows),
+generated pixels, and "SYNTHETIC" written into the patient comments.
+"""
+import datetime
+import json
+import logging
+import math
+import random
+import socket
+import sys
+
+from pydicom.dataset import Dataset, FileMetaDataset
+from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+from pynetdicom import AE
+from pynetdicom.sop_class import (ComputedRadiographyImageStorage,
+                                  UltrasoundImageStorage, Verification)
+
+PORT = 4242
+PACS_AET = "PACS"                     # the archive's AE title (its DICOM name)
+PATIENTS = "/usr/local/share/clinic/patients.json"
+SOP_CLASS = {"CR": ComputedRadiographyImageStorage, "US": UltrasoundImageStorage}
+
+logging.getLogger("pynetdicom").setLevel(logging.CRITICAL)
+
+
+def my_aet():
+    """Our own AE title: the machine name, upper case, at most 16 characters."""
+    return socket.gethostname().upper()[:16]
+
+
+def pixels(modality, size, seed):
+    """A plausible-looking grey image: a soft body outline with brighter 'bone'.
+
+    No real image is used anywhere. Values are 8-bit, one byte per pixel.
+    """
+    rnd = random.Random(seed)
+    cx, cy = size / 2, size / 2
+    bones = [(cx + rnd.uniform(-20, 20), cy + rnd.uniform(-60, 60), rnd.uniform(10, 22)) for _ in range(3)]
+    out = bytearray(size * size)
+    for y in range(size):
+        for x in range(size):
+            if modality == "US":
+                # Ultrasound: a fan-shaped sector of speckle on black.
+                dx, dy = x - cx, y
+                r, a = math.hypot(dx, dy), math.atan2(dx, dy)
+                v = int(90 + 60 * math.sin(r / 9) + rnd.uniform(-40, 40)) if r < size * 0.9 and abs(a) < 0.6 else 0
+            else:
+                # X-ray: soft tissue is grey, bone is bright, air is dark.
+                body = max(0.0, 1 - ((x - cx) / (size * 0.38)) ** 2 - ((y - cy) / (size * 0.48)) ** 2)
+                v = 25 + 110 * body ** 0.5
+                for bx, by, br in bones:
+                    if math.hypot(x - bx, (y - by) / 2.2) < br:
+                        v += 90
+                v += rnd.uniform(-6, 6)
+            out[y * size + x] = max(0, min(255, int(v)))
+    return bytes(out)
+
+
+def make_instance(patient, study, series_uid, number):
+    img = patient["imaging"]
+    ds = Dataset()
+    ds.file_meta = FileMetaDataset()
+    ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    ds.is_little_endian, ds.is_implicit_VR = True, False
+
+    ds.SOPClassUID = SOP_CLASS[img["modality"]]
+    ds.SOPInstanceUID = generate_uid()
+    ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
+    ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+
+    first, last = patient["name"].split(" ", 1)
+    ds.PatientName = f"{last}^{first}"
+    ds.PatientID = patient["mrn"]
+    ds.PatientBirthDate = patient["dob"].replace("-", "")
+    ds.PatientComments = "SYNTHETIC patient for a network lab. Not a real person."
+
+    ds.StudyInstanceUID, ds.StudyDate, ds.StudyTime = study["uid"], study["date"], study["time"]
+    ds.StudyID, ds.AccessionNumber = study["id"], study["accession"]
+    ds.StudyDescription = img["description"]
+    ds.ReferringPhysicianName = "Synthetic^Referrer"
+    ds.InstitutionName = "Clinic network lab (synthetic)"
+    ds.SeriesInstanceUID, ds.SeriesNumber = series_uid, 1
+    ds.Modality, ds.BodyPartExamined = img["modality"], img["body_part"]
+    ds.SeriesDescription = img["description"]
+    ds.InstanceNumber = number
+    ds.ContentDate, ds.ContentTime = study["date"], study["time"]
+
+    size = 192
+    ds.Rows = ds.Columns = size
+    ds.SamplesPerPixel, ds.PhotometricInterpretation = 1, "MONOCHROME2"
+    ds.BitsAllocated, ds.BitsStored, ds.HighBit, ds.PixelRepresentation = 8, 8, 7, 0
+    ds.PixelData = pixels(img["modality"], size, ds.SOPInstanceUID)
+    return ds
+
+
+def associate(host, port, contexts, timeout):
+    ae = AE(ae_title=my_aet())
+    ae.acse_timeout = ae.dimse_timeout = ae.network_timeout = timeout
+    ae.connection_timeout = timeout
+    for ctx in contexts:
+        ae.add_requested_context(ctx, ExplicitVRLittleEndian)
+    return ae.associate(host, port, ae_title=PACS_AET)
+
+
+def send(host, port, timeout=10):
+    with open(PATIENTS) as f:
+        patient = random.choice([p for p in json.load(f) if p.get("imaging")])
+    now = datetime.datetime.now()
+    study = {"uid": generate_uid(), "date": now.strftime("%Y%m%d"), "time": now.strftime("%H%M%S"),
+             "id": f"{random.randrange(10**6):06d}", "accession": f"ACC{random.randrange(10**7):07d}"}
+    series = generate_uid()
+    views = 2 if patient["imaging"]["modality"] == "CR" else 1
+    images = [make_instance(patient, study, series, n) for n in range(1, views + 1)]
+
+    assoc = associate(host, port, [images[0].SOPClassUID], timeout)
+    if not assoc.is_established:
+        print(f"dicom: archive {host}:{port} refused or did not answer", file=sys.stderr)
+        return 1
+    stored = 0
+    try:
+        for ds in images:
+            status = assoc.send_c_store(ds)
+            if status and status.Status == 0x0000:
+                stored += 1
+    finally:
+        assoc.release()
+    print(json.dumps({"patient": patient["mrn"], "study": study["uid"], "modality": images[0].Modality,
+                      "description": images[0].StudyDescription, "images": len(images), "stored": stored}))
+    return 0 if stored == len(images) else 1
+
+
+def echo(host, port, timeout):
+    assoc = associate(host, port, [Verification], timeout)
+    if not assoc.is_established:
+        return 1
+    try:
+        status = assoc.send_c_echo()
+    finally:
+        assoc.release()
+    return 0 if status and status.Status == 0x0000 else 1
+
+
+def main(argv):
+    if len(argv) < 3 or argv[1] not in ("send", "echo"):
+        print(__doc__, file=sys.stderr)
+        return 2
+    host = argv[2]
+    port = int(argv[3]) if len(argv) > 3 and argv[3] else PORT
+    if argv[1] == "send":
+        return send(host, port)
+    return echo(host, port, float(argv[4]) if len(argv) > 4 else 3)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

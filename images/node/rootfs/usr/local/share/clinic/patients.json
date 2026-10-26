@@ -1,0 +1,18 @@
+[
+  {"mrn": "SYN-100001", "name": "Avery Holt",       "dob": "1961-04-12", "note": "Hypertension follow-up",          "labs": "BMP"},
+  {"mrn": "SYN-100002", "name": "Jordan Pike",      "dob": "1987-09-30", "note": "Annual physical",                 "labs": "CBC"},
+  {"mrn": "SYN-100003", "name": "Morgan Ellery",    "dob": "1954-01-08", "note": "Type 2 diabetes review",          "labs": "DIABETES"},
+  {"mrn": "SYN-100004", "name": "Riley Danvers",    "dob": "1999-06-21", "note": "Sprained ankle, X-ray ordered",
+   "imaging": {"modality": "CR", "body_part": "ANKLE", "description": "XR ankle, 2 views"}},
+  {"mrn": "SYN-100005", "name": "Casey Whitlow",    "dob": "1972-11-03", "note": "Lipid panel results",             "labs": "LIPID"},
+  {"mrn": "SYN-100006", "name": "Taylor Brennick",  "dob": "2010-02-17", "note": "Asthma action plan"},
+  {"mrn": "SYN-100007", "name": "Quinn Marlow",     "dob": "1948-07-25", "note": "Chest X-ray, cough 3 weeks",      "labs": "CBC",
+   "imaging": {"modality": "CR", "body_part": "CHEST", "description": "XR chest, PA and lateral"}},
+  {"mrn": "SYN-100008", "name": "Sasha Okafor",     "dob": "1990-12-11", "note": "Prenatal visit, ultrasound",      "labs": "CBC",
+   "imaging": {"modality": "US", "body_part": "ABDOMEN", "description": "US obstetric, routine"}},
+  {"mrn": "SYN-100009", "name": "Drew Kessler",     "dob": "1983-03-29", "note": "Migraine consult"},
+  {"mrn": "SYN-100010", "name": "Robin Vale",       "dob": "1966-08-14", "note": "Thyroid function tests",          "labs": "THYROID"},
+  {"mrn": "SYN-100011", "name": "Emerson Tull",     "dob": "1977-05-06", "note": "Knee pain, imaging review",
+   "imaging": {"modality": "CR", "body_part": "KNEE", "description": "XR knee, 2 views"}},
+  {"mrn": "SYN-100012", "name": "Parker Lindqvist", "dob": "2001-10-19", "note": "Travel vaccines"}
+]

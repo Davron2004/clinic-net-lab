@@ -12,6 +12,7 @@ zones:
   devices:  { label: "Medical devices", vlan: 30, subnet: 10.10.30.0/24 }
   printers: { label: "Printers & fax",  vlan: 40, subnet: 10.10.40.0/24 }
   guest:    { label: "Guest Wi-Fi",     vlan: 50, subnet: 10.10.50.0/24 }
+  security: { label: "Security monitoring", vlan: 90, subnet: 10.10.90.0/24 }
   internet: { label: "Internet" }
   remote:   { label: "Remote access" }
 
@@ -28,22 +29,35 @@ nodes:
   printer:      { zone: printers, label: "Printer / fax",     ip: { clinic: 10.10.40.10,  flat: 10.10.0.40 } }
   guest-laptop: { zone: guest,    label: "Guest laptop",      ip: { clinic: dhcp,         flat: dhcp } }
   guest-phone:  { zone: guest,    label: "Guest phone",       ip: { clinic: dhcp,         flat: dhcp } }
+  siem:         { zone: security, label: "Security monitor (SIEM)", ip: { clinic: 10.10.90.10, flat: 10.10.0.90 } }
   internet:     { zone: internet, label: "Public website",    ip: { clinic: 203.0.113.10, flat: 203.0.113.10 } }
-  home-doctor:  { zone: remote,   label: "Doctor at home",    ip: { clinic: 192.0.2.50,   flat: 192.0.2.50 } }
+  # tunnel_ip: the laptop's address inside the VPN (segmented clinic only),
+  # which is the source address the firewall sees for its tunnel traffic.
+  home-doctor:  { zone: remote,   label: "Doctor at home",    ip: { clinic: 192.0.2.50,   flat: 192.0.2.50 }, tunnel_ip: 10.10.60.2 }
   # The clinic's public address, as seen from the internet.
   clinic-wan:   { zone: core,     label: "Clinic public IP",  ip: { clinic: 198.51.100.2, flat: 198.51.100.2 }, container: router }
 
 # Every flow: from a machine, to a machine, on a service, and whether policy
 # allows it. probe is how the test checks it (default tcp). "gateway" means
 # the router address on the source machine's own network.
+#
+# Probe kinds (images/node/rootfs/usr/local/bin/clinic-probe*):
+#   tcp           a TCP connection opens
+#   https         an HTTPS page loads
+#   dns           the DNS server answers a lookup
+#   dicom         DICOM C-ECHO: a real DICOM archive accepts us and answers
+#   hl7           an HL7 lab result over MLLP is acknowledged (MSA|AA)
+#   pacs-web      the image archive's web viewer / API answers (login prompt)
+#   https-direct  HTTPS out of the machine's own cable, never through a VPN
+#   https-vpn     HTTPS forced into the machine's VPN tunnel
 flows:
   # ---- allowed: each one is a job someone needs done ----
   - { id: A01, from: reception-pc, to: emr,      port: 443,  probe: https, expect: allow, what: "Front desk opens patient charts in the EMR" }
   - { id: A02, from: doctor-pc,    to: emr,      port: 443,  probe: https, expect: allow, what: "Doctor opens patient charts in the EMR" }
-  - { id: A03, from: doctor-pc,    to: pacs,     port: 8042,               expect: allow, what: "Doctor views X-rays in the image archive" }
+  - { id: A03, from: doctor-pc,    to: pacs,     port: 8042, probe: pacs-web, expect: allow, what: "Doctor views X-rays in the image archive" }
   - { id: A04, from: reception-pc, to: printer,  port: 9100,               expect: allow, what: "Front desk prints a requisition" }
-  - { id: A05, from: imaging,      to: pacs,     port: 4242,               expect: allow, what: "Imaging workstation sends new images to the archive (DICOM)" }
-  - { id: A06, from: lab-analyzer, to: emr,      port: 2575,               expect: allow, what: "Lab analyzer sends results to the EMR (HL7)" }
+  - { id: A05, from: imaging,      to: pacs,     port: 4242, probe: dicom, expect: allow, what: "Imaging workstation sends new images to the archive (DICOM)" }
+  - { id: A06, from: lab-analyzer, to: emr,      port: 2575, probe: hl7,   expect: allow, what: "Lab analyzer sends results to the EMR (HL7)" }
   - { id: A07, from: reception-pc, to: internet, port: 443,  probe: https, expect: allow, what: "Staff browse the web" }
   - { id: A08, from: guest-laptop, to: internet, port: 443,  probe: https, expect: allow, what: "Guests browse the web" }
   - { id: A09, from: guest-laptop, to: gateway,  port: 53,   probe: dns,   expect: allow, what: "Guests look up web addresses (DNS)" }
@@ -52,7 +66,7 @@ flows:
   # ---- forbidden: guest Wi-Fi is the outside world ----
   - { id: D01, from: guest-laptop, to: emr,          port: 443,  probe: https, expect: deny, what: "Guest reaches the EMR web app" }
   - { id: D02, from: guest-laptop, to: emr,          port: 445,                expect: deny, what: "Guest reaches the patient records file share" }
-  - { id: D03, from: guest-laptop, to: pacs,         port: 8042,               expect: deny, what: "Guest reaches the image archive" }
+  - { id: D03, from: guest-laptop, to: pacs,         port: 8042, probe: pacs-web, expect: deny, what: "Guest reaches the image archive" }
   - { id: D04, from: guest-laptop, to: reception-pc, port: 3389,               expect: deny, what: "Guest remote-desktops into the reception PC" }
   - { id: D05, from: guest-laptop, to: printer,      port: 9100,               expect: deny, what: "Guest prints to (or attacks) the clinic printer" }
   - { id: D06, from: guest-laptop, to: guest-phone,  port: 8080,               expect: deny, what: "One guest device reaches another (client isolation)" }
@@ -62,7 +76,7 @@ flows:
   - { id: D08, from: imaging,      to: emr,          port: 445,                expect: deny, what: "Imaging workstation reaches the patient records share" }
   - { id: D09, from: imaging,      to: reception-pc, port: 445,                expect: deny, what: "Imaging workstation spreads to a staff PC (SMB)" }
   - { id: D10, from: imaging,      to: doctor-pc,    port: 3389,               expect: deny, what: "Imaging workstation remote-desktops into a staff PC" }
-  - { id: D11, from: imaging,      to: pacs,         port: 8042,               expect: deny, what: "Imaging workstation reaches the archive's admin API (could delete studies)" }
+  - { id: D11, from: imaging,      to: pacs,         port: 8042, probe: pacs-web, expect: deny, what: "Imaging workstation reaches the archive's admin API (could delete studies)" }
   - { id: D12, from: imaging,      to: gateway,      port: 53,   probe: dns,   expect: deny, what: "Imaging workstation uses DNS (a covert way out)" }
   - { id: D13, from: lab-analyzer, to: internet,     port: 443,  probe: https, expect: deny, what: "Lab analyzer reaches the internet" }
   - { id: D23, from: imaging,      to: lab-analyzer, port: 22,                 expect: deny, what: "One medical device reaches another (port isolation)" }
@@ -78,4 +92,41 @@ flows:
   # ---- forbidden: the internet ----
   - { id: D20, from: internet,     to: clinic-wan,   port: 443,                expect: deny, what: "Internet opens a connection to the clinic" }
   - { id: D21, from: internet,     to: emr,          port: 443,  probe: https, expect: deny, what: "Internet reaches the EMR directly" }
-  - { id: D22, from: home-doctor,  to: emr,          port: 443,  probe: https, expect: deny, what: "Home laptop reaches the EMR without the VPN" }
+  # D22 forces the probe out of the laptop's own cable (https-direct), around
+  # the tunnel. Plain https would now go through the VPN and succeed (that is
+  # R01). This way the same laptop, the one machine that does hold VPN keys,
+  # proves the EMR is not exposed to its home address: without the tunnel
+  # there is no way in, not even for a trusted doctor.
+  - { id: D22, from: home-doctor,  to: emr,          port: 443,  probe: https-direct, expect: deny, what: "Home laptop reaches the EMR without the VPN" }
+
+  # ---- forbidden: each medical protocol only between the machines that need it ----
+  - { id: D24, from: doctor-pc,    to: pacs,         port: 4242, probe: dicom, expect: deny, what: "Staff PC talks DICOM to the archive (only the imaging workstation sends images)" }
+  - { id: D25, from: imaging,      to: emr,          port: 2575, probe: hl7,   expect: deny, what: "Imaging workstation files lab results in the EMR (only the lab analyzer may)" }
+  - { id: D26, from: lab-analyzer, to: pacs,         port: 4242, probe: dicom, expect: deny, what: "Lab analyzer talks DICOM to the image archive (not its job)" }
+  - { id: D27, from: guest-laptop, to: emr,          port: 2575, probe: hl7,   expect: deny, what: "Guest injects fake lab results into the EMR (HL7)" }
+  - { id: D28, from: guest-laptop, to: pacs,         port: 4242, probe: dicom, expect: deny, what: "Guest pulls images from the archive (DICOM)" }
+
+  # ---- remote access: a doctor working from home ----
+  # Segmented clinic: a WireGuard VPN that leads to the EMR web app and
+  # nothing else. Flat clinic: no VPN; remote access is a port forward to the
+  # reception PC's remote desktop, so R01 shows as broken there and R07 as a
+  # violation. That is the honest picture of the "before" network.
+  - { id: R01, from: home-doctor,  to: emr,          port: 443,  probe: https, expect: allow, what: "Doctor at home opens the EMR over the VPN" }
+  - { id: R02, from: home-doctor,  to: pacs,         port: 8042, probe: pacs-web, expect: deny, what: "VPN user reaches the image archive" }
+  - { id: R03, from: home-doctor,  to: emr,          port: 445,                expect: deny, what: "VPN user reaches the patient records file share" }
+  - { id: R04, from: home-doctor,  to: emr,          port: 22,                 expect: deny, what: "VPN user opens an admin shell on the EMR server" }
+  - { id: R05, from: home-doctor,  to: doctor-pc,    port: 3389,               expect: deny, what: "VPN user remote-desktops into a staff PC" }
+  - { id: R06, from: home-doctor,  to: internet,     port: 443,  probe: https-vpn, expect: deny, what: "Laptop uses the clinic as its route to the internet (through the VPN)" }
+  - { id: R07, from: internet,     to: clinic-wan,   port: 3389,               expect: deny, what: "Anyone on the internet reaches a staff PC's remote desktop (port forward)" }
+
+  # ---- security monitoring (the SIEM) ----
+  # probe "reach" tests the network path: a refused connection counts as
+  # reached, so these pass even while Wazuh is still starting or switched off.
+  - { id: S01, from: emr,          to: siem,     port: 1514, probe: reach, expect: allow, what: "EMR server's security agent sends events to the SIEM" }
+  - { id: S02, from: emr,          to: siem,     port: 1515, probe: reach, expect: allow, what: "EMR server's security agent enrolls with the SIEM" }
+  - { id: S03, from: router,       to: siem,     port: 1514, probe: reach, expect: allow, what: "Router's security agent ships the firewall log to the SIEM" }
+  - { id: S04, from: reception-pc, to: siem,     port: 1515, probe: reach, expect: deny,  what: "Staff PC enrolls a fake agent with the SIEM" }
+  - { id: S05, from: guest-laptop, to: siem,     port: 1514, probe: reach, expect: deny,  what: "Guest reaches the SIEM" }
+  - { id: S06, from: imaging,      to: siem,     port: 1514, probe: reach, expect: deny,  what: "Infected medical device floods or tampers with the SIEM" }
+  - { id: S07, from: pacs,         to: siem,     port: 1515, probe: reach, expect: deny,  what: "A server without an agent talks to the SIEM" }
+  - { id: S08, from: siem,         to: internet, port: 443,  probe: https, expect: deny,  what: "SIEM sends the clinic's security logs to the internet" }

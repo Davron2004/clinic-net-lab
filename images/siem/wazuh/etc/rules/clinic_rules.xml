@@ -1,0 +1,153 @@
+<!--
+  Clinic rules: what the SIEM should tell a person about.
+
+  Alert fatigue is the real enemy in a clinic with no IT team: if the screen
+  shows fifty alerts a day, nobody reads the one that matters. So:
+    - level 0-6: recorded in alerts.json, never shown to anyone,
+    - level 7+:  shown on the clinic map (run/alerts.jsonl),
+    - level 12+: someone should look today.
+  Each rule below states why it earns its level.
+
+  Wazuh levels: 0 = ignore, 3 = worth recording, 7 = worth a look,
+  12 = high importance, 15 = critical. IDs 100000+ are reserved for local rules.
+-->
+
+<!-- ====================================================================
+  Firewall: one event per logged packet from the router's firewall.jsonl.
+  The router's agent ships each line as JSON; Wazuh's built-in JSON decoder
+  turns its keys into fields: oob.prefix ("allow:<rule>" / "deny:<rule>",
+  the name of the firewall rule that fired), src_ip, dest_ip, dest_port.
+==================================================================== -->
+<group name="clinic,firewall,">
+
+  <rule id="100100" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="oob.prefix">^allow:|^deny:</field>
+    <description>Clinic firewall event</description>
+  </rule>
+
+  <!-- Allowed connections are normal work. -->
+  <rule id="100101" level="0">
+    <if_sid>100100</if_sid>
+    <field name="oob.prefix">^allow:</field>
+    <description>Firewall allowed $(src_ip) to reach $(dest_ip):$(dest_port)</description>
+  </rule>
+
+  <!-- One blocked packet on its own means little (a misconfigured app,
+       a retry). Recorded, not shown; the rules below decide what matters. -->
+  <rule id="100102" level="3">
+    <if_sid>100100</if_sid>
+    <field name="oob.prefix">^deny:</field>
+    <description>Firewall blocked $(src_ip) from reaching $(dest_ip):$(dest_port)</description>
+  </rule>
+
+  <!-- The internet knocking on the clinic's door: every public address gets
+       this all day. Alerting on it is the classic way to drown a SIEM. -->
+  <rule id="100103" level="0">
+    <if_sid>100102</if_sid>
+    <field name="oob.prefix">^deny:inbound$</field>
+    <description>Internet traffic to the clinic was blocked (background noise)</description>
+  </rule>
+
+  <!-- A medical device has one job and no reason to use the internet.
+       If it tries, it is infected or was set up to phone home. -->
+  <rule id="100110" level="12">
+    <if_sid>100102</if_sid>
+    <field name="oob.prefix">^deny:device-internet$</field>
+    <description>$(src_ip) tried to reach the internet (medical devices never should)</description>
+    <mitre><id>T1071</id></mitre>
+  </rule>
+
+  <!-- Servers never start connections to the internet. One that does may be
+       uploading patient data. -->
+  <rule id="100111" level="12">
+    <if_sid>100102</if_sid>
+    <field name="oob.prefix">^deny:server-internet$</field>
+    <description>$(src_ip) tried to send data to the internet (servers never should)</description>
+    <mitre><id>T1041</id></mitre>
+  </rule>
+
+  <!-- Printers phone home for firmware updates all the time. Recorded only. -->
+  <rule id="100112" level="5">
+    <if_sid>100102</if_sid>
+    <field name="oob.prefix">^deny:printer-internet$</field>
+    <description>Printer $(src_ip) tried to reach the internet (blocked)</description>
+  </rule>
+
+  <!-- Many blocked attempts from one inside machine in a short time: it is
+       probing the network, which is how ransomware looks for its next victim.
+       10 blocked packets in 30 seconds is far above what a healthy machine
+       does (a wrong setting retries a few times, not ten). -->
+  <rule id="100120" level="12" frequency="10" timeframe="30">
+    <if_matched_sid>100102</if_matched_sid>
+    <same_field>src_ip</same_field>
+    <field name="src_ip">^10\.10\.</field>
+    <description>$(src_ip) was blocked 10 times in 30 seconds: scanning the network or malware spreading</description>
+    <mitre><id>T1046</id></mitre>
+  </rule>
+
+</group>
+
+<!-- ====================================================================
+  Patient records: file-integrity monitoring on the EMR server. The agent
+  there watches only /srv/emr/records, in real time. Records are written by
+  the EMR application; a file changing outside it is either a mistake or an
+  attack, and both need a person.
+==================================================================== -->
+<group name="clinic,patient_records,">
+
+  <rule id="100200" level="12">
+    <if_sid>550</if_sid>
+    <field name="file">^/srv/emr/records/</field>
+    <description>Patient record modified: $(file)</description>
+    <mitre><id>T1565.001</id></mitre>
+  </rule>
+
+  <rule id="100201" level="12">
+    <if_sid>553</if_sid>
+    <field name="file">^/srv/emr/records/</field>
+    <description>Patient record deleted: $(file)</description>
+    <mitre><id>T1485</id></mitre>
+  </rule>
+
+  <!-- A new file in the records folder: a new chart, or a ransom note.
+       Worth a look, less urgent than a change or a deletion. -->
+  <rule id="100202" level="9">
+    <if_sid>554</if_sid>
+    <field name="file">^/srv/emr/records/</field>
+    <description>New file in the patient records folder: $(file)</description>
+  </rule>
+
+</group>
+
+<!-- Five or more record changes within a minute is not someone at work:
+     it is what ransomware encrypting the folder looks like. (Its own group,
+     so it does not count its own alerts.)
+     The change that tips it over is reported as this alert instead of its
+     own (that is how Wazuh's frequency rules work). ignore="60": raise it at
+     most once a minute; while the attack goes on, the per-file alerts above
+     keep coming, and one alarm is enough to get someone moving. -->
+<group name="clinic,ransomware,">
+
+  <rule id="100210" level="15" frequency="5" timeframe="60" ignore="60">
+    <if_matched_group>patient_records</if_matched_group>
+    <description>Many patient records changed within a minute: looks like ransomware</description>
+    <mitre><id>T1486</id></mitre>
+  </rule>
+
+</group>
+
+<!-- ====================================================================
+  The SIEM itself: a silent agent means a blind spot. 504: no news from
+  the agent for a minute (crashed, unplugged, or killed by malware).
+  506: the agent was stopped on purpose, which is also what an attacker
+  with admin rights would do first.
+==================================================================== -->
+<group name="clinic,agent_health,">
+
+  <rule id="100300" level="9">
+    <if_sid>504, 506</if_sid>
+    <description>Security agent stopped reporting (the SIEM is blind on this machine)</description>
+  </rule>
+
+</group>

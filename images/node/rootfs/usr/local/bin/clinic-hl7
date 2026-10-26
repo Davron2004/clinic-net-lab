@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""HL7 v2 lab results over MLLP: the EMR's interface listener and the analyzer's sender.
+
+HL7 v2 is how lab analyzers, EMRs and billing systems have exchanged messages
+since the 1990s. A message is plain text: one segment per line (lines end in
+a carriage return), fields separated by "|". An ORU^R01 message carries lab
+results: MSH (header), PID (patient), OBR (the order), one OBX per result.
+
+On the network, messages travel over MLLP (Minimal Lower Layer Protocol): a
+TCP connection where each message is wrapped as
+
+    0x0B <message> 0x1C 0x0D
+
+and the receiver answers every message with an ACK whose MSA segment says
+AA (accepted), AE (error) or AR (rejected).
+
+    clinic-hl7 listen [port]               EMR side: receive, file, acknowledge
+    clinic-hl7 send <host> [port]          lab analyzer: send one result, require AA
+    clinic-hl7 probe <host> [port] [secs]  test probe: a test-mode message, require AA
+
+All patients and values are synthetic.
+"""
+import asyncio
+import datetime
+import json
+import os
+import random
+import socket
+import sys
+
+START, END = b"\x0b", b"\x1c\x0d"          # MLLP frame markers
+PORT = 2575
+RESULTS = "/srv/emr/lab-results"          # where the EMR files results
+PATIENTS = "/usr/local/share/clinic/patients.json"
+
+# Lab panels: (code, name, units, reference range, low, high) per test.
+PANELS = {
+    "CBC":      ("58410-2", "Complete blood count", [
+        ("6690-2", "WBC", "10*3/uL", "4.0-11.0", 3.2, 12.5),
+        ("718-7", "Hemoglobin", "g/dL", "12.0-17.5", 10.5, 18.0),
+        ("777-3", "Platelets", "10*3/uL", "150-400", 120, 450)]),
+    "BMP":      ("51990-0", "Basic metabolic panel", [
+        ("2823-3", "Potassium", "mmol/L", "3.5-5.1", 3.1, 5.6),
+        ("2951-2", "Sodium", "mmol/L", "136-145", 132, 148),
+        ("2160-0", "Creatinine", "mg/dL", "0.6-1.3", 0.5, 1.8)]),
+    "DIABETES": ("4548-4", "Diabetes monitoring", [
+        ("4548-4", "Hemoglobin A1c", "%", "4.0-5.6", 5.2, 9.5),
+        ("2345-7", "Glucose", "mg/dL", "70-99", 80, 210)]),
+    "LIPID":    ("57698-3", "Lipid panel", [
+        ("2093-3", "Cholesterol", "mg/dL", "0-199", 150, 260),
+        ("2085-9", "HDL cholesterol", "mg/dL", "40-100", 32, 75),
+        ("13457-7", "LDL cholesterol", "mg/dL", "0-99", 70, 190)]),
+    "THYROID":  ("24348-5", "Thyroid panel", [
+        ("3016-3", "TSH", "mIU/L", "0.4-4.0", 0.2, 6.5),
+        ("3024-7", "Free T4", "ng/dL", "0.8-1.8", 0.6, 2.1)]),
+}
+
+
+def now():
+    return datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+
+
+def frame(message: str) -> bytes:
+    return START + message.encode() + END
+
+
+def fields(segment: str) -> list:
+    return segment.split("|")
+
+
+def field(segs: dict, name: str, idx: int, default=""):
+    """HL7 field numbering: MSH-9 is the 9th field, counting MSH-1 as the "|" itself."""
+    seg = segs.get(name)
+    if not seg:
+        return default
+    f = fields(seg[0])
+    i = idx - 1 if name == "MSH" else idx
+    return f[i] if i < len(f) else default
+
+
+# ------------------------------------------------------------------ listener
+
+def parse(message: str) -> dict:
+    """Split a message into segments, keyed by segment name (OBX can repeat)."""
+    segs = {}
+    for line in message.replace("\n", "\r").split("\r"):
+        if line.strip():
+            segs.setdefault(line[:3], []).append(line)
+    if "MSH" not in segs or not segs["MSH"][0].startswith("MSH|^~\\&"):
+        raise ValueError("not an HL7 v2 message (no MSH header)")
+    return segs
+
+
+# Error codes from HL7 table 0357, used in the ERR segment of a negative ACK.
+ERRORS = {"100": "Segment sequence error", "101": "Required field missing",
+          "200": "Unsupported message type", "207": "Application internal error"}
+
+
+def ack(segs: dict, code: str, text: str = "", error: str = "207") -> str:
+    """Build the ACK: our own header plus MSA echoing the sender's control ID."""
+    trigger = (field(segs, "MSH", 9).split("^") + ["", ""])[1]
+    msh = "|".join(["MSH", "^~\\&", "EMR", "CLINIC", field(segs, "MSH", 3), field(segs, "MSH", 4),
+                    now(), "", f"ACK^{trigger}^ACK", f"ACK{random.randrange(10**9):09d}", "P", "2.5.1"])
+    lines = [msh, f"MSA|{code}|{field(segs, 'MSH', 10)}" + (f"|{text}" if text else "")]
+    if code != "AA":
+        lines.append(f"ERR|||{error}^{ERRORS[error]}^HL70357|E|||{text}")
+    return "\r".join(lines) + "\r"
+
+
+def file_results(segs: dict, peer: str) -> int:
+    """Store each OBX as one JSON line, plus the raw message. Returns the count."""
+    pid3 = field(segs, "PID", 3).split("^")[0]
+    name = field(segs, "PID", 5).split("^")
+    patient = " ".join(p for p in (name[1:2] + name[:1]) if p)
+    order = field(segs, "OBR", 4).split("^")
+    ctrl = field(segs, "MSH", 10)
+    rows = []
+    for obx in segs.get("OBX", []):
+        f = fields(obx) + [""] * 12
+        code = f[3].split("^")
+        rows.append({"received": datetime.datetime.now().isoformat(timespec="seconds"),
+                     "from": peer, "control_id": ctrl, "mrn": pid3, "patient": patient,
+                     "panel": order[1] if len(order) > 1 else order[0],
+                     "test": code[1] if len(code) > 1 else code[0], "value": f[5],
+                     "units": f[6], "range": f[7], "flag": f[8]})
+    os.makedirs(f"{RESULTS}/messages", exist_ok=True)
+    safe = "".join(c for c in ctrl if c.isalnum())[:40] or now()   # the ID comes from the network
+    with open(f"{RESULTS}/messages/{safe}.hl7", "w") as out:
+        out.write("\n".join(line for seg in segs.values() for line in seg) + "\n")
+    with open(f"{RESULTS}/results.jsonl", "a") as out:
+        for row in rows:
+            out.write(json.dumps(row) + "\n")
+    return len(rows)
+
+
+def handle_message(message: str, peer: str) -> str:
+    try:
+        segs = parse(message)
+    except ValueError as e:
+        return ack({}, "AR", str(e), "100")
+    msg_type = field(segs, "MSH", 9)
+    if not msg_type.startswith("ORU^R01"):
+        return ack(segs, "AR", f"unsupported message type {msg_type}", "200")
+    if not segs.get("PID") or not segs.get("OBX"):
+        return ack(segs, "AE", "ORU^R01 needs a PID and at least one OBX", "101")
+    # MSH-11 processing ID: P = production, T = training/test. Test messages
+    # (the isolation suite's probe) are validated and acknowledged but never
+    # filed into a patient's chart, which is how real interfaces treat them.
+    if field(segs, "MSH", 11) == "P":
+        count = file_results(segs, peer)
+        print(f"hl7: {peer} filed {count} results for {field(segs, 'PID', 3)}", flush=True)
+    else:
+        print(f"hl7: {peer} test message acknowledged, not filed", flush=True)
+    return ack(segs, "AA")
+
+
+async def serve_client(reader, writer):
+    peer = writer.get_extra_info("peername")[0]
+    buf = b""
+    try:
+        while True:
+            chunk = await asyncio.wait_for(reader.read(65536), 30)
+            if not chunk:
+                break
+            buf += chunk
+            if len(buf) > 1_000_000:
+                break  # no lab result is this big: drop the connection
+            # One TCP read can hold part of a message or several messages.
+            while END in buf:
+                raw, buf = buf.split(END, 1)
+                start = raw.find(START)
+                if start < 0:
+                    continue  # bytes outside a frame: ignore, as MLLP says
+                reply = handle_message(raw[start + 1:].decode(errors="replace"), peer)
+                writer.write(frame(reply))
+                await writer.drain()
+    except (asyncio.TimeoutError, ConnectionError):
+        pass
+    finally:
+        writer.close()
+
+
+async def listen(port: int):
+    os.makedirs(RESULTS, exist_ok=True)
+    server = await asyncio.start_server(serve_client, "0.0.0.0", port)
+    print(f"hl7: listening for MLLP on {port}", flush=True)
+    await server.serve_forever()
+
+
+# ------------------------------------------------------------------ sender
+
+def oru_message(patient: dict, panel_key: str, processing_id: str) -> tuple:
+    """Build an ORU^R01 with one OBX per test in the panel. Returns (control_id, text)."""
+    panel_code, panel_name, tests = PANELS[panel_key]
+    ctrl = f"LAB{random.randrange(10**9):09d}"
+    ts = now()
+    last, first = patient["name"].split(" ", 1)[1], patient["name"].split(" ", 1)[0]
+    segs = [
+        "|".join(["MSH", "^~\\&", "ANALYZER", "CLINIC-LAB", "EMR", "CLINIC", ts, "",
+                  "ORU^R01^ORU_R01", ctrl, processing_id, "2.5.1"]),
+        f"PID|1||{patient['mrn']}^^^CLINIC^MR||{last}^{first}||{patient['dob'].replace('-', '')}",
+        f"OBR|1||{ctrl}|{panel_code}^{panel_name}^LN|||{ts}|||||||||||||||{ts}|||F",
+    ]
+    for i, (code, name, units, ref, low, high) in enumerate(tests, start=1):
+        value = round(random.uniform(low, high), 1)
+        lo, hi = (float(x) for x in ref.split("-"))
+        flag = "L" if value < lo else "H" if value > hi else "N"
+        segs.append(f"OBX|{i}|NM|{code}^{name}^LN||{value}|{units}|{ref}|{flag}|||F|||{ts}")
+    return ctrl, "\r".join(segs) + "\r"
+
+
+def exchange(host: str, port: int, message: str, timeout: float) -> str:
+    """Send one framed message and return the decoded ACK."""
+    with socket.create_connection((host, port), timeout=timeout) as s:
+        s.settimeout(timeout)
+        s.sendall(frame(message))
+        buf = b""
+        while END not in buf:
+            chunk = s.recv(65536)
+            if not chunk:
+                raise ConnectionError("connection closed before the ACK arrived")
+            buf += chunk
+    raw = buf.split(END, 1)[0]
+    return raw[raw.find(START) + 1:].decode(errors="replace")
+
+
+def ack_code(reply: str, ctrl: str) -> str:
+    """The MSA acknowledgment code, but only if it acknowledges our message."""
+    for seg in reply.split("\r"):
+        f = fields(seg)
+        if f[0] == "MSA" and len(f) > 2 and f[2] == ctrl:
+            return f[1]
+    return ""
+
+
+def send(host: str, port: int, timeout: float, test: bool) -> int:
+    with open(PATIENTS) as f:
+        patients = json.load(f)
+    if test:
+        patient, panel = patients[0], "CBC"
+    else:
+        patient = random.choice([p for p in patients if p.get("labs")])
+        panel = patient["labs"]
+    ctrl, message = oru_message(patient, panel, "T" if test else "P")
+    try:
+        reply = exchange(host, port, message, timeout)
+    except OSError as e:
+        print(f"hl7: no answer from {host}:{port} ({e})", file=sys.stderr)
+        return 1
+    code = ack_code(reply, ctrl)
+    print(json.dumps({"control_id": ctrl, "mrn": patient["mrn"], "panel": panel, "ack": code or "none"}))
+    return 0 if code == "AA" else 1
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] not in ("listen", "send", "probe"):
+        print(__doc__, file=sys.stderr)
+        return 2
+    if argv[1] == "listen":
+        asyncio.run(listen(int(argv[2]) if len(argv) > 2 and argv[2] else PORT))
+        return 0
+    host = argv[2]
+    port = int(argv[3]) if len(argv) > 3 and argv[3] else PORT
+    timeout = float(argv[4]) if len(argv) > 4 else 5
+    return send(host, port, timeout, test=argv[1] == "probe")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

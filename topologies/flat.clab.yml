@@ -19,8 +19,11 @@ topology:
 
   nodes:
     router:
-      env: { ROLE: router }
+      # The node image plus a Wazuh agent that ships the firewall log to the SIEM.
+      image: clinic-net-lab/agent:${CLINIC_IMAGE_TAG:=dev}
+      env: { ROLE: router, SERVICES: "wazuh-agent", WAZUH_MANAGER: 10.10.0.90, CLINIC_MONITORING: "${CLINIC_MONITORING:=1}" }
       binds:
+        - ../run/secrets:/etc/clinic/secrets:ro
         - ../config/flat/router:/etc/clinic/router:ro
         - ../run/logs:/var/log/clinic
     switch:
@@ -38,9 +41,16 @@ topology:
 
     # servers
     emr:
-      env: { IP: 10.10.0.10/24, GW: 10.10.0.1, DNS: 10.10.0.1, SERVICES: "emr listen:22,2575" }
+      # The node image plus a Wazuh agent watching the patient records.
+      image: clinic-net-lab/agent:${CLINIC_IMAGE_TAG:=dev}
+      env: { IP: 10.10.0.10/24, GW: 10.10.0.1, DNS: 10.10.0.1, SERVICES: "emr hl7 listen:22 wazuh-agent", READY_PORTS: "443 445 2575",
+             WAZUH_MANAGER: 10.10.0.90, CLINIC_MONITORING: "${CLINIC_MONITORING:=1}" }
+      binds:
+        - ../run/secrets:/etc/clinic/secrets:ro
     pacs:
-      env: { IP: 10.10.0.20/24, GW: 10.10.0.1, DNS: 10.10.0.1, SERVICES: "listen:4242,8042" }
+      # Orthanc, a real DICOM archive (images/pacs).
+      image: clinic-net-lab/pacs:${CLINIC_IMAGE_TAG:=dev}
+      env: { IP: 10.10.0.20/24, GW: 10.10.0.1, DNS: 10.10.0.1, SERVICES: "orthanc", READY_PORTS: "4242 8042" }
 
     # medical devices
     imaging:
@@ -58,6 +68,19 @@ topology:
     guest-phone:
       env: { IP: dhcp, SERVICES: "listen:8080" }
 
+    # security monitoring
+    # The SIEM (Wazuh manager). With CLINIC_MONITORING=0 ./lab swaps in the
+    # plain node image: the machine is still there, the software is not.
+    siem:
+      image: clinic-net-lab/${CLINIC_SIEM_IMAGE:=siem}:${CLINIC_IMAGE_TAG:=dev}
+      env: { IP: 10.10.0.90/24, GW: 10.10.0.1 }
+      binds:
+        - ../run:/clinic-run
+        - ../policy:/etc/clinic/policy:ro
+
+    # A doctor's laptop at home. No VPN here: the flat clinic's "remote
+    # access" is a port forward to the reception PC's remote desktop
+    # (config/flat/router/nftables.nft).
     home-doctor:
       env: { IP: 192.0.2.50/24, GW: 192.0.2.1, DNS: 203.0.113.10 }
 
@@ -74,3 +97,4 @@ topology:
     - { endpoints: ["switch:eth8", "printer:eth1"], mtu: 1500 }
     - { endpoints: ["switch:eth9", "guest-laptop:eth1"], mtu: 1500 }
     - { endpoints: ["switch:eth10", "guest-phone:eth1"], mtu: 1500 }
+    - { endpoints: ["switch:eth11", "siem:eth1"], mtu: 1500 }

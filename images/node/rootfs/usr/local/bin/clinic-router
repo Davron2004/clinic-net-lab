@@ -3,6 +3,7 @@
 #   interfaces.sh  addresses and VLAN sub-interfaces
 #   nftables.nft   the firewall policy
 #   dnsmasq.conf   DNS (and DHCP for the guest Wi-Fi)
+#   wireguard.sh   remote access VPN (optional; the flat network has none)
 set -euo pipefail
 cfg=/etc/clinic/router
 
@@ -37,5 +38,10 @@ nft -f "$cfg/nftables.nft"
 
 if [ -f "$cfg/dnsmasq.conf" ]; then
     dnsmasq --conf-file="$cfg/dnsmasq.conf"
+fi
+# The VPN comes after the firewall, so the tunnel is never up unprotected,
+# and after DNS/DHCP, so waiting for the laptop's key never delays the clinic.
+if [ -f "$cfg/wireguard.sh" ]; then
+    bash "$cfg/wireguard.sh"
 fi
 echo "router: $(nft list ruleset | grep -c 'accept\|drop') firewall rules loaded"

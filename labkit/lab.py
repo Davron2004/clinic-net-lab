@@ -70,12 +70,17 @@ def ip_index(policy, net=None):
         ip = ip_of(policy, name, net)
         if ip:
             index[ip] = name
+        # Inside the VPN a laptop has a second address; the firewall log shows that one.
+        if net == "clinic" and spec.get("tunnel_ip"):
+            index[str(spec["tunnel_ip"])] = name
     # The router answers on one address per zone; all of them are "router".
     for zone in policy["zones"].values():
         if net == "clinic" and zone.get("subnet"):
             gw = str(next(ipaddress.ip_network(zone["subnet"]).hosts()))
             index[gw] = "router"
     index["198.51.100.2"] = "router"
+    if net == "clinic":
+        index["10.10.60.1"] = "router"   # the router's end of the VPN tunnel
     return index
 
 
