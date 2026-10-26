@@ -65,6 +65,7 @@ flows:
   - { id: D11, from: imaging,      to: pacs,         port: 8042,               expect: deny, what: "Imaging workstation reaches the archive's admin API (could delete studies)" }
   - { id: D12, from: imaging,      to: gateway,      port: 53,   probe: dns,   expect: deny, what: "Imaging workstation uses DNS (a covert way out)" }
   - { id: D13, from: lab-analyzer, to: internet,     port: 443,  probe: https, expect: deny, what: "Lab analyzer reaches the internet" }
+  - { id: D23, from: imaging,      to: lab-analyzer, port: 22,                 expect: deny, what: "One medical device reaches another (port isolation)" }
 
   # ---- forbidden: printers, servers, staff least privilege ----
   - { id: D14, from: printer,      to: internet,     port: 443,  probe: https, expect: deny, what: "Printer phones home to the internet" }

