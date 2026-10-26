@@ -178,8 +178,9 @@ function updateStatus() {
   } else if (s?.scenario?.running) {
     const sc = s.scenario;
     const open = sc.breaches ? `, <b>${sc.breaches} got through</b>` : '';
-    const paths = sc.planned ? `${sc.planned} common attack paths` : 'common attack paths';
-    status.set('attack', `Ransomware on the ${nodeLabel(sc.node)} tries ${paths} · ${sc.attempts} tried${open}`);
+    // Short enough to fit beside the legend at 1440px even on the flat map.
+    const of = sc.planned ? ` of ${sc.planned}` : '';
+    status.set('attack', `Ransomware on the ${nodeLabel(sc.node)} · <b>${sc.attempts}</b>${of} attack paths tried${open}`);
   } else if (s?.job?.name && !(runState(s, s.job.name)?.ts >= s.job.started)) {
     // Started from the page, not reporting yet. (Once the run has ended,
     // the program may take a moment to exit: no "Starting" then.)

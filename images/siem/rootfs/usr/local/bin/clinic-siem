@@ -22,6 +22,8 @@ done
 ip link set eth1 up
 ip addr add "$IP" dev eth1
 ip route add default via "$GW"
+# No resolver: the security zone has no DNS (see clinic-entrypoint).
+echo "# no DNS on this network (see the topology)" > /etc/resolv.conf
 mkdir -p /run/clinic
 touch /run/clinic/ready
 log "on the network as $IP"

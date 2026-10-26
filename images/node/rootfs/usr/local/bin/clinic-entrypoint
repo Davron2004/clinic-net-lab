@@ -39,7 +39,15 @@ configure_address() {
     else
         ip addr add "$IP" dev "$dev"
         [ -n "${GW:-}" ] && ip route add default via "$GW"
-        [ -n "${DNS:-}" ] && echo "nameserver $DNS" > /etc/resolv.conf
+        # A machine without a DNS setting gets no resolver at all. Docker
+        # would otherwise leave its own resolver in /etc/resolv.conf, and the
+        # machine's background lookups would show up as blocked attempts to
+        # reach the internet.
+        if [ -n "${DNS:-}" ]; then
+            echo "nameserver $DNS" > /etc/resolv.conf
+        else
+            echo "# no DNS on this network (see the topology)" > /etc/resolv.conf
+        fi
     fi
     return 0
 }
