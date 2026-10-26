@@ -249,6 +249,7 @@ function handle(msg) {
         title: group.title,
         text: where ? nodeLabel(where) : '',
         seconds: group.level >= 15 ? 12 : 7,
+        level: group.level,
       });
       for (const id of new Set([a.node, a.src].filter(Boolean))) {
         if (!scene.layout?.nodes[id]) continue;
@@ -267,7 +268,7 @@ function handle(msg) {
           const what = msg.last_job.name === 'attack' ? 'The ransomware simulation' : 'The isolation tests';
           toasts.show({
             kind: 'error', title: `${what} stopped with an error`,
-            text: msg.last_job.tail?.slice(-1)[0] || `Exit code ${msg.last_job.code}`, seconds: 10,
+            text: msg.last_job.tail?.slice(-1)[0] || `Exit code ${msg.last_job.code}`, seconds: 10, level: 99,
           });
         }
       }
@@ -300,12 +301,12 @@ async function run(name) {
   try {
     const r = await fetch(`/api/run/${name}`, { method: 'POST' });
     if (r.status === 409) {
-      toasts.show({ kind: 'error', title: 'Something is already running', text: 'Wait for it to finish, then try again.' });
+      toasts.show({ kind: 'error', title: 'Something is already running', text: 'Wait for it to finish, then try again.', level: 99 });
     } else if (!r.ok) {
       throw new Error(`HTTP ${r.status}`);
     }
   } catch {
-    toasts.show({ kind: 'error', title: 'Could not start it', text: 'The map server did not answer.' });
+    toasts.show({ kind: 'error', title: 'Could not start it', text: 'The map server did not answer.', level: 99 });
     header.setBusy(busy());
   }
 }

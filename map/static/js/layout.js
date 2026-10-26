@@ -22,8 +22,8 @@ const G = {
   buildingPad: 30,
   buildingHead: 40,
   router: { w: 320, h: 84 },
-  flatRouter: { w: 118, h: 96 },
-  outsideGap: 92,
+  flatRouter: { w: 110, h: 96 },
+  outsideGap: 124, // room for the flat network's router, which sits on the wall
   outsideStackGap: 40,
   margin: 22,
   bandMin: 74, // vertical gap between a zone row and the router
@@ -232,11 +232,11 @@ export function computeLayout(topology, aspect) {
   router.wan = { x: router.x, y: routerCy, n: NORMAL.left };
   for (const z of outs) router.ports[z.id] = router.wan;
 
-  // The flat network's router sits against the outside wall: it only links
-  // the office to the internet. It is kept narrow so connections between
-  // machines, drawn straight across the middle, never pass behind it.
+  // The flat network's router sits on the outside wall: it only links the
+  // office to the internet. Every machine is further in than its inner edge,
+  // so connections drawn straight between machines never pass behind it.
   const F = G.flatRouter;
-  const fx = bx + 16;
+  const fx = bx - F.w / 2;
   const flatRouter = { x: fx, y: routerCy - F.h / 2, w: F.w, h: F.h, cx: fx + F.w / 2, cy: routerCy, ports: {} };
   const flatTop = { x: flatRouter.cx, y: flatRouter.y, n: NORMAL.up };
   const flatBottom = { x: flatRouter.cx, y: flatRouter.y + F.h, n: NORMAL.down };

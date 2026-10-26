@@ -173,7 +173,11 @@ export class TestsCard {
     let foot;
     if (!any) foot = 'Sends real traffic between every pair that matters.';
     else if (running) foot = `${plural(violations, 'violation')} so far`;
-    else if (violations || broken) foot = `<b>${plural(violations, 'forbidden connection')}</b> got through${broken ? ` · ${broken} needed blocked` : ''}`;
+    else if (violations || broken) {
+      const got = violations ? `<b>${plural(violations, 'forbidden connection')}</b> got through` : '';
+      const lost = broken ? `${plural(broken, 'needed connection')} blocked` : '';
+      foot = [got, lost].filter(Boolean).join(' · ');
+    }
     else foot = `${icon('shieldCheck', 'ic ic--inline')} No violations · ${allow.length} allowed, ${deny.length} blocked`;
 
     this.el.innerHTML = `
@@ -226,7 +230,7 @@ const GROUP_SECONDS = 60;
 function mergeTitles(a, b) {
   if (a === b) return a;
   const pa = a.split(':')[0];
-  return pa === b.split(':')[0] && pa.length < a.length ? pa : b;
+  return pa === b.split(':')[0] ? pa : b;
 }
 
 export function alertKey(a) {
@@ -392,20 +396,28 @@ export class Toasts {
 
   // key: toasts with the same key update one another (a burst of the same
   // alert counts up on one toast instead of stacking).
-  show({ kind = 'alert', title, text, seconds = 6, key = null, count = 1 }) {
+  // level: when there is no room, the least severe toast goes first, so a
+  // burst of minor alerts never pushes out the one that matters.
+  show({ kind = 'alert', title, text, seconds = 6, key = null, count = 1, level = 0 }) {
     let t = key ? this.open.get(key) : null;
     if (!t || !t.isConnected) {
+      const shown = [...this.el.children];
+      if (shown.length >= 2) {
+        const weakest = shown.reduce((w, x) => (Number(x.dataset.level) < Number(w.dataset.level) ? x : w));
+        if (Number(weakest.dataset.level) > level) return;
+        this.close(weakest, true);
+      }
       t = document.createElement('div');
       t.setAttribute('role', 'status');
       t.addEventListener('click', () => this.close(t));
       this.el.append(t);
-      while (this.el.children.length > 2) this.close(this.el.firstElementChild, true);
       requestAnimationFrame(() => t.classList.add('is-shown'));
       if (key) {
         t.dataset.key = key;
         this.open.set(key, t);
       }
     }
+    t.dataset.level = String(level);
     t.className = `toast toast--${kind}${t.classList.contains('is-shown') ? ' is-shown' : ''}`;
     const glyph = { error: 'x', critical: 'alert' }[kind] || 'bell';
     // The count sits on the second line: the title may be clamped.

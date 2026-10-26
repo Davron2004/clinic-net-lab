@@ -7,7 +7,8 @@ A live picture of the lab network for people who do not read firewall rules.
 
 - **The clinic as rooms.** Each zone (VLAN) is a box with its machines inside.
   The router/firewall sits in the middle with one port per zone; the internet
-  and the home office are outside the building on the left.
+  and the home office are outside the building on the left. In the segmented
+  clinic the home office's link is drawn as a VPN tunnel.
 - **Every connection the lab makes.** Green travels all the way to the target
   (allowed). Red runs into the firewall and stops there (blocked). Hot pink
   reaches a target it should never have reached (a violation), leaves a
@@ -23,7 +24,13 @@ A live picture of the lab network for people who do not read firewall rules.
 - **Isolation tests** (sidebar): one square per flow in `policy/clinic.yml`,
   lit as each result arrives.
 - **Alerts** from the security monitor, as a list and a short pop-up, with the
-  machines involved marked on the map.
+  machines involved marked on the map. Repeats of the same alert on the same
+  machine within a minute (ransomware sets off one per encrypted record) are
+  one line and one pop-up with a count. The isolation tests do forbidden
+  things on purpose, so the alerts they set off are listed as "During test",
+  without pop-ups.
+- **Routine traffic** (`labkit/traffic.py`): the ordinary, allowed work of the
+  clinic, so the map looks alive between demos.
 
 The two buttons run `tests/isolation.py` and `scenarios/ransomware.py` in the
 map's container, one at a time. A run started with `./lab test` or
@@ -52,7 +59,13 @@ the picture honest:
 - A test result usually arrives after the firewall already logged its packet.
   The server pairs the two, so a connection is drawn once, when it happens.
   Connections the firewall does not log (same-zone traffic, the flat network,
-  name lookups answered by the router) are drawn from the test result.
+  name lookups answered by the router) are drawn from the test result. A
+  connection forwarded from the clinic's public address (the flat network's
+  remote desktop port forward) is drawn to the machine it really reached.
+- A firewall line is judged against policy by its machines and port. When two
+  policy flows share those but disagree (the home laptop reaching the EMR
+  through the VPN is allowed, without it is not), the line only says allowed
+  or blocked; the test result in the sidebar still says which flow it was.
 
 A browser that connects, or reconnects, first gets the whole current state,
 so refreshing in the middle of a demo shows the same picture.

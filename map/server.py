@@ -645,7 +645,8 @@ class Engine:
 
     def _name_addresses(self, alert):
         """Say "Guest laptop" where the monitor could only say "Guest Wi-Fi
-        device 10.10.50.110" (it does not know DHCP leases; the map does)."""
+        device 10.10.50.110" (it does not know DHCP leases; the map does),
+        and name files without their folders."""
         title = alert["title"]
         for ip in {alert.get("src_ip"), alert.get("dst_ip")} - {None}:
             node = self.topo.endpoint(ip)
@@ -655,7 +656,8 @@ class Engine:
             for zone in self.topo.zones.values():
                 title = title.replace(f"{zone['label']} device {ip}", label)
             title = re.sub(rf"(?<![\d.]){re.escape(ip)}(?![\d.])", label, title)
-        return title
+        # "/srv/emr/records/patient-0009.json" -> "patient-0009.json"
+        return re.sub(r"(?<![\w.])(?:/[\w.-]+)+/([\w.-]+)", r"\1", title)
 
     def _window_at(self, ts):
         for w in reversed(self.windows):
