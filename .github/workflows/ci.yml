@@ -1,0 +1,87 @@
+name: ci
+
+# Every change rebuilds the whole clinic network on a fresh Linux machine and
+# proves the isolation policy still holds, then proves the test suite would
+# notice if it did not (the flat network must fail it).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          files=$(grep -rlE '^#!/(usr/)?bin/(env )?bash' lab config images scenarios tests 2>/dev/null || true)
+          docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.10.0 $files
+      - name: ruff
+        run: |
+          files=$(grep -rlE '^#!/usr/bin/env python3' images || true)
+          docker run --rm -v "$PWD:/src" -w /src ghcr.io/astral-sh/ruff:0.14.0 \
+            check --line-length 120 labkit tests scenarios map $files
+
+  lab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CLINIC_TRAFFIC: "0"   # no background clinic traffic during tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start the segmented clinic
+        run: ./lab up
+
+      - name: Isolation tests (segmented clinic must match policy exactly)
+        run: ./lab test
+
+      - name: Ransomware scenario (must be contained, records intact)
+        run: ./lab attack --fast
+
+      - name: Keep the segmented report
+        if: always()
+        run: |
+          mkdir -p reports
+          cp run/results/report.md reports/segmented.md || true
+          cat run/results/report.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Start the flat "before" network
+        run: ./lab up flat
+
+      - name: Isolation tests (must catch the flat network's violations)
+        run: ./lab test --expect-violations
+
+      - name: Ransomware scenario on the flat network (must succeed, proving the test is real)
+        run: |
+          if ./lab attack --fast; then
+            echo "The attack was contained on the flat network; the scenario is not testing anything." >&2
+            exit 1
+          fi
+
+      - name: Keep the flat report
+        if: always()
+        run: |
+          cp run/results/report.md reports/flat.md || true
+          cat run/results/report.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolation-reports
+          path: reports/
+
+      - name: Machine logs on failure
+        if: failure()
+        run: for c in $(docker ps -a --filter label=containerlab=clinic --format '{{.Names}}'); do echo "--- $c"; docker logs --tail 40 "$c"; done
+
+      - name: Stop
+        if: always()
+        run: ./lab down
