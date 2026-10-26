@@ -26,6 +26,11 @@ from labkit import lab  # noqa: E402
 TIMEOUT = 3        # seconds to wait for an answer
 WORKERS = 12       # probes in flight at once
 
+# Some probes force a path (around or through a VPN tunnel) that only makes
+# sense from the source machine. The target's self-check only needs to know
+# the service is up, so it uses the plain probe.
+CONTROL_KIND = {"https-direct": "https", "https-vpn": "https"}
+
 
 def resolve_target(policy, flow):
     if flow["to"] == "gateway":
@@ -61,6 +66,7 @@ def control(policy, flow, dst_ip):
     else:
         target = flow["to"]
     kind = flow.get("probe", "tcp")
+    kind = CONTROL_KIND.get(kind, kind)
     code, _ = lab.sh(lab.container(policy, target),
                      f"clinic-probe {kind} {dst_ip} {flow['port']} {TIMEOUT}", timeout=TIMEOUT + 10)
     return code == 0

@@ -1,6 +1,6 @@
 # The segmented clinic ("after"). Deploy with: ./lab up
 #
-#            internet ── home-doctor
+#            internet ── home-doctor (VPN tunnel to the router)
 #               │ (WAN)
 #            router  (nftables firewall, router-on-a-stick)
 #               │ (802.1Q trunk)
@@ -29,6 +29,7 @@ topology:
       binds:
         - ../config/clinic/router:/etc/clinic/router:ro
         - ../run/logs:/var/log/clinic
+        - ../run/wg:/var/lib/clinic/wg-pubkeys   # VPN public keys only (see clinic-wg)
     switch:
       env: { ROLE: switch }
       binds:
@@ -44,9 +45,11 @@ topology:
 
     # VLAN 20 - servers
     emr:
-      env: { IP: 10.10.20.10/24, GW: 10.10.20.1, DNS: 10.10.20.1, SERVICES: "emr listen:22,2575" }
+      env: { IP: 10.10.20.10/24, GW: 10.10.20.1, DNS: 10.10.20.1, SERVICES: "emr hl7 listen:22", READY_PORTS: "443 445 2575" }
     pacs:
-      env: { IP: 10.10.20.20/24, GW: 10.10.20.1, DNS: 10.10.20.1, SERVICES: "listen:4242,8042" }
+      # Orthanc, a real DICOM archive (images/pacs).
+      image: clinic-net-lab/pacs:${CLINIC_IMAGE_TAG:=dev}
+      env: { IP: 10.10.20.20/24, GW: 10.10.20.1, DNS: 10.10.20.1, SERVICES: "orthanc", READY_PORTS: "4242 8042" }
 
     # VLAN 30 - medical devices (no DNS server on purpose)
     imaging:
@@ -64,8 +67,13 @@ topology:
     guest-phone:
       env: { IP: dhcp, SERVICES: "listen:8080" }
 
+    # A doctor's laptop at home, on the internet. Reaches the EMR through a
+    # WireGuard VPN to the router (tunnel 10.10.60.0/24); see post-up.sh.
     home-doctor:
       env: { IP: 192.0.2.50/24, GW: 192.0.2.1, DNS: 203.0.113.10 }
+      binds:
+        - ../config/clinic/home-doctor:/etc/clinic/node:ro
+        - ../run/wg:/var/lib/clinic/wg-pubkeys
 
   links:
     - { endpoints: ["router:eth1", "internet:eth1"], mtu: 1500 }

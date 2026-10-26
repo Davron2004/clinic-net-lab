@@ -4,6 +4,12 @@
 # on the way out. Inside the clinic there is no policy at all, and it could
 # not have one: machines on the same subnet talk to each other directly
 # through the switch, so their traffic never reaches this router.
+#
+# Remote access, the way many small offices do it: a port forward. Port 3389
+# on the public address goes straight to the reception PC's remote desktop,
+# so a doctor at home can log in to it. So can anyone on the internet who
+# finds the port, which scanners do within minutes; exposed remote desktop
+# is a classic way ransomware gets in.
 
 flush ruleset
 
@@ -19,11 +25,16 @@ table inet clinic {
         type filter hook forward priority filter; policy drop;
         ct state established,related accept
         iifname "eth2" oifname "eth1" log group 0 prefix "allow:lan-internet" accept
+        iifname "eth1" ct status dnat ip daddr 10.10.0.11 tcp dport 3389 log group 0 prefix "allow:rdp-port-forward" accept
         log group 0 prefix "deny:inbound" drop
     }
 }
 
 table ip nat {
+    chain prerouting {
+        type nat hook prerouting priority dstnat;
+        iifname "eth1" ip daddr 198.51.100.2 tcp dport 3389 dnat to 10.10.0.11
+    }
     chain postrouting {
         type nat hook postrouting priority srcnat;
         oifname "eth1" ip saddr 10.10.0.0/24 masquerade

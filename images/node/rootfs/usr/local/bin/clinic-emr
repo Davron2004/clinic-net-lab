@@ -4,6 +4,8 @@
 #  - SMB 445:   the records folder shared over the network. Deliberately
 #               misconfigured as guest-writable, a shortcut common in small
 #               offices. Network segmentation is what keeps ransomware off it.
+#  - HL7 2575:  lab results from the analyzer; a separate service ("hl7",
+#               clinic-hl7) that files them under /srv/emr/lab-results.
 #  - Every record is synthetic. No real patient data exists in this lab.
 set -euo pipefail
 records=/srv/emr/records

@@ -1,0 +1,82 @@
+#!/bin/bash
+# WireGuard VPN helper, used by the router and the remote doctor's laptop.
+#
+#   clinic-wg init <my-name> <tunnel-address/prefix> [listen-port]
+#       Make a key pair, create the tunnel interface wg0, publish the PUBLIC key.
+#   clinic-wg peer <peer-name> <allowed-ips> [endpoint]
+#       Wait for the peer's public key, then let that peer into the tunnel.
+#   clinic-wg wait-handshake [seconds]
+#       Wait until the tunnel has completed a handshake with its peer.
+#
+# How keys work here. Each side makes its own key pair at boot. The private
+# key is written only inside this container (/run/clinic/wg, readable by root
+# only) and never leaves it. The public key is not secret: it goes into a
+# shared "key drop" folder (/var/lib/clinic/wg-pubkeys, mounted from run/wg
+# on the host), the lab's stand-in for an administrator copying the laptop's
+# public key into the router config. Nothing key-like is ever committed:
+# ./lab up empties run/ before every start, so a stale key cannot be picked up.
+set -euo pipefail
+
+KEYDIR=/run/clinic/wg
+DROP=/var/lib/clinic/wg-pubkeys
+log() { echo "wireguard: $*"; }
+
+init() {
+    local name=$1 addr=$2 port=${3:-}
+    mkdir -p "$KEYDIR" "$DROP"
+    chmod 700 "$KEYDIR"
+    (umask 077; wg genkey > "$KEYDIR/private.key")
+    wg pubkey < "$KEYDIR/private.key" > "$KEYDIR/public.key"
+
+    # WireGuard lives in the Linux kernel (5.6+). Docker Desktop has it; on a
+    # Linux host the module loads on first use, or by hand: sudo modprobe wireguard
+    if ! ip link add wg0 type wireguard; then
+        log "the kernel has no WireGuard support (on the host: sudo modprobe wireguard)"
+        return 1
+    fi
+    wg set wg0 private-key "$KEYDIR/private.key" ${port:+listen-port "$port"}
+    ip addr add "$addr" dev wg0
+    ip link set wg0 up
+
+    # Publish atomically (write, then rename) so the peer never reads half a key.
+    cp "$KEYDIR/public.key" "$DROP/.$name.pub.tmp"
+    mv "$DROP/.$name.pub.tmp" "$DROP/$name.pub"
+    log "wg0 $addr up, public key published as $name.pub"
+}
+
+peer() {
+    local name=$1 allowed=$2 endpoint=${3:-} key=""
+    # Both sides publish their own key before waiting for the other's, so
+    # they can boot in any order and neither can wait on the other forever.
+    for _ in $(seq 1 900); do
+        if [ -s "$DROP/$name.pub" ]; then key=$(cat "$DROP/$name.pub"); break; fi
+        sleep 0.1
+    done
+    [ -n "$key" ] || { log "no public key from $name after 90s"; return 1; }
+    if [ -n "$endpoint" ]; then
+        # The laptop side: where the clinic is, and a keepalive so the tunnel
+        # comes up right away and stays up through home routers.
+        wg set wg0 peer "$key" allowed-ips "$allowed" endpoint "$endpoint" persistent-keepalive 25
+    else
+        wg set wg0 peer "$key" allowed-ips "$allowed"
+    fi
+    log "peer $name allowed for $allowed${endpoint:+ via $endpoint}"
+}
+
+wait_handshake() {
+    local limit=${1:-60} hs
+    for _ in $(seq 1 $((limit * 10))); do
+        hs=$(wg show wg0 latest-handshakes | awk '{print $2}' | sort -n | tail -1)
+        if [ "${hs:-0}" -gt 0 ]; then log "tunnel established"; return 0; fi
+        sleep 0.1
+    done
+    log "no handshake after ${limit}s"; return 1
+}
+
+cmd=${1:-}; shift || true
+case "$cmd" in
+    init)           init "$@" ;;
+    peer)           peer "$@" ;;
+    wait-handshake) wait_handshake "$@" ;;
+    *)              sed -n '2,10p' "$0"; exit 2 ;;
+esac

@@ -6,13 +6,15 @@
 #   ./lab test          run the isolation test suite against the running lab
 #   ./lab attack        ransomware scenario: infected imaging workstation
 #   ./lab map           (re)start the clinic map at http://localhost:8080
+#   ./lab traffic on|off  routine clinic traffic in the background (on by default)
 #   ./lab status        show machines and whether they are ready
 #   ./lab shell <node>  open a shell on a machine (e.g. ./lab shell router)
 #   ./lab down          stop everything
 #
 # Environment: CLINIC_LAB (lab name, default clinic), MAP_PORT (default 8080),
 # CLINIC_IMAGE_TAG (tag for locally built images, default dev). Use different
-# values to run several labs side by side.
+# values to run several labs side by side. CLINIC_TRAFFIC=0 starts the lab
+# without routine background traffic.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -24,6 +26,7 @@ TAG=${CLINIC_IMAGE_TAG:-dev}
 NODE_IMAGE=clinic-net-lab/node:$TAG
 TOOLBOX_IMAGE=clinic-net-lab/toolbox:$TAG
 MAP_CONTAINER="clinic-map-$LAB"
+TRAFFIC_CONTAINER="clinic-traffic-$LAB"
 
 say()  { printf '\033[1m==> %s\033[0m\n' "$*"; }
 fail() { printf '\033[31merror: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -107,23 +110,39 @@ map_start() {
     say "Clinic map: http://localhost:$MAP_PORT"
 }
 
+# Routine clinic traffic (labkit/traffic.py): ordinary allowed actions every
+# few seconds, so the map shows a working clinic. It pauses by itself while
+# a test or attack runs.
+traffic_start() {
+    docker rm -f "$TRAFFIC_CONTAINER" >/dev/null 2>&1 || true
+    docker run -d --name "$TRAFFIC_CONTAINER" \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -v "$ROOT:$ROOT" -w "$ROOT" \
+        -e CLINIC_LAB="$LAB" -e CLINIC_RUN_DIR="$RUN" \
+        "$TOOLBOX_IMAGE" python labkit/traffic.py >/dev/null
+    say "Routine clinic traffic: on (./lab traffic off, or CLINIC_TRAFFIC=0)"
+}
+traffic_stop() { docker rm -f "$TRAFFIC_CONTAINER" >/dev/null 2>&1 || true; }
+
 up() {
     local variant=${1:-clinic}
     [ -f "$ROOT/topologies/$variant.clab.yml" ] || fail "unknown network '$variant' (use clinic or flat)"
     build
+    traffic_stop
     destroy
     # Fresh run directory: logs, events and results belong to one deployment.
     # Empty it rather than delete it: Docker Desktop's file sharing can keep
     # pointing at a deleted directory, which containers then fail to write to.
     # The cleanup runs in a container because on Linux the files belong to
     # root (the lab machines wrote them).
-    mkdir -p "$RUN/logs" "$RUN/results"
+    mkdir -p "$RUN/logs" "$RUN/results" "$RUN/wg"
     docker run --rm -v "$RUN:/run-dir" "$TOOLBOX_IMAGE" find /run-dir -mindepth 1 -type f -delete
     echo "$variant" > "$RUN/variant"
     say "Starting the $variant network"
     clab deploy -t "$variant.clab.yml" --name "$LAB" >/dev/null
     wait_ready
     map_start
+    if [ "${CLINIC_TRAFFIC:-1}" != 0 ]; then traffic_start; fi
     say "Lab is up. Next: ./lab test"
 }
 
@@ -132,17 +151,22 @@ shift || true
 case "$cmd" in
     up)      up "$@" ;;
     before)  up flat ;;
-    down)    destroy; docker rm -f "$MAP_CONTAINER" >/dev/null 2>&1 || true ;;
+    down)    traffic_stop; destroy; docker rm -f "$MAP_CONTAINER" >/dev/null 2>&1 || true ;;
     build)   build ;;
     test)    toolbox python tests/isolation.py "$@" ;;
     attack)  toolbox python scenarios/ransomware.py "$@" ;;
     map)     map_start ;;
+    traffic) case "${1:-on}" in
+                 on)  traffic_start ;;
+                 off) traffic_stop; say "Routine clinic traffic: off" ;;
+                 *)   fail "usage: ./lab traffic on|off" ;;
+             esac ;;
     status)  for n in $(lab_nodes); do
                  if docker exec "$n" test -f /run/clinic/ready 2>/dev/null; then s=ready; else s=booting; fi
                  printf '  %-28s %s\n' "$n" "$s"
              done ;;
     shell)   [ $# -ge 1 ] || fail "usage: ./lab shell <node>"
              docker exec -it "clab-$LAB-$1" bash ;;
-    help|-h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+    help|-h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//' ;;
     *)       fail "unknown command '$cmd' (try ./lab help)" ;;
 esac

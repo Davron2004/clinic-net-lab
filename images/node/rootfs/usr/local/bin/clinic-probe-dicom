@@ -1,0 +1,5 @@
+#!/bin/bash
+# clinic-probe-dicom <host> [port] [timeout]: DICOM C-ECHO ("are you a DICOM
+# archive?"). Passes only if a real DICOM service accepts the association and
+# answers the echo, which an open TCP port alone would not prove.
+exec clinic-dicom echo "$1" "${2:-4242}" "${3:-3}"

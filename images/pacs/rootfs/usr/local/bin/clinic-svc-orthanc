@@ -1,0 +1,38 @@
+#!/bin/bash
+# Service "orthanc": configure and start the Orthanc image archive.
+#
+# Login: one user, "doctor", with a password made fresh at every boot. It is
+# never stored in the repo. To read it:
+#     docker exec clab-<lab>-pacs cat /run/clinic/pacs-credentials
+# (lab name "clinic" by default), then from a staff PC, for example:
+#     ./lab shell doctor-pc
+#     curl -u doctor:<password> http://10.10.20.20:8042/studies
+set -euo pipefail
+
+password=$(openssl rand -hex 12 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(12))')
+(umask 077; echo "doctor:$password" > /run/clinic/pacs-credentials)
+
+# Orthanc's own settings, as the official image reads them (ORTHANC__*).
+export ORTHANC__NAME="Clinic image archive (synthetic data)"
+export ORTHANC__DICOM_AET="PACS"
+export ORTHANC__DICOM_PORT=4242
+export ORTHANC__HTTP_PORT=8042
+# Refuse DICOM connections addressed to any other AE title (catches
+# misconfigured modalities instead of silently filing their images).
+export ORTHANC__DICOM_CHECK_CALLED_AET=true
+export ORTHANC__AUTHENTICATION_ENABLED=true
+export ORTHANC__REGISTERED_USERS="{\"doctor\": \"$password\"}"
+# Logs go to the container's stdout (docker logs clab-<lab>-pacs).
+
+# The image's normal startup first turns the variables above into a config
+# file and prints it, password included. Generate it here instead, keeping
+# that output in a root-only file, then hand the finished config to the same
+# startup script, which runs Orthanc.
+cd /startup
+if ! (umask 077; python3 generateConfiguration.py > /run/clinic/orthanc-config.log 2>&1); then
+    grep -E '^(ERROR|WARNING)' /run/clinic/orthanc-config.log >&2 || true
+    exit 1
+fi
+install -m 600 /tmp/orthanc.json /run/clinic/orthanc.json
+rm -f /tmp/orthanc.json
+exec /docker-entrypoint.sh /run/clinic/orthanc.json

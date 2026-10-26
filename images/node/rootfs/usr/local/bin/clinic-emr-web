@@ -8,6 +8,7 @@ import ssl
 import subprocess
 
 RECORDS = "/srv/emr/records"
+LAB_RESULTS = "/srv/emr/lab-results/results.jsonl"   # filed by the HL7 interface (clinic-hl7)
 
 
 def load_records():
@@ -23,6 +24,36 @@ def load_records():
     return rows
 
 
+def latest_lab_results(limit=8):
+    try:
+        with open(LAB_RESULTS) as f:
+            lines = f.readlines()[-limit:]
+    except OSError:
+        return []
+    rows = []
+    for line in reversed(lines):
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    return rows
+
+
+def labs_section():
+    rows = latest_lab_results()
+    if not rows:
+        return "<h2>Latest lab results</h2><p><small>None received yet.</small></p>"
+    body = "".join(
+        f"<tr><td>{html.escape(r['received'][11:])}</td><td>{html.escape(r['mrn'])}</td>"
+        f"<td>{html.escape(r['patient'])}</td><td>{html.escape(r['test'])}</td>"
+        f"<td class={'bad' if r['flag'] in ('H', 'L') else 'ok'}>{html.escape(r['value'])} {html.escape(r['units'])}"
+        f"{' (' + html.escape(r['flag']) + ')' if r['flag'] in ('H', 'L') else ''}</td>"
+        f"<td>{html.escape(r['range'])}</td></tr>" for r in rows)
+    return ("<h2>Latest lab results</h2><small>Received from the lab analyzer over HL7.</small>"
+            "<table><tr><th>Time</th><th>MRN</th><th>Patient</th><th>Test</th><th>Result</th>"
+            f"<th>Reference</th></tr>{body}</table>")
+
+
 def page():
     rows = load_records()
     bad = sum(1 for r in rows if not r[4])
@@ -33,10 +64,11 @@ def page():
               else f"<p class=ok>All {len(rows)} charts readable</p>")
     return f"""<!doctype html><meta charset=utf-8><title>Clinic EMR</title>
 <style>body{{font:15px system-ui;margin:2rem;color:#1d2433}}table{{border-collapse:collapse;width:100%}}
-td,th{{padding:.5rem .75rem;border-bottom:1px solid #e3e6ec;text-align:left}}
+h2{{margin-top:2rem;font-size:1.1rem}}td,th{{padding:.5rem .75rem;border-bottom:1px solid #e3e6ec;text-align:left}}
 .ok{{color:#1b7f4b}}tr.ok{{color:inherit}}.bad{{color:#c0392b}}small{{color:#6b7385}}</style>
 <h1>Clinic EMR</h1><small>Synthetic records for a network lab. No real patient data.</small>
-{status}<table><tr><th>MRN</th><th>Name</th><th>DOB</th><th>Last visit</th></tr>{body}</table>"""
+{status}<table><tr><th>MRN</th><th>Name</th><th>DOB</th><th>Last visit</th></tr>{body}</table>
+{labs_section()}"""
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
