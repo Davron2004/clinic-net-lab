@@ -303,6 +303,7 @@ export class Banner {
       <span class="banner-icon">${icon(ic)}</span>
       <div class="banner-body"><p class="banner-title">${esc(title)}</p><p class="banner-text">${esc(text)}</p></div>`;
     this.el.hidden = false;
+    this.el.parentElement.classList.add('has-banner');
     requestAnimationFrame(() => this.el.classList.add('is-shown'));
     clearTimeout(this.timer);
     this.timer = setTimeout(() => this.hide(), seconds * 1000);
@@ -311,6 +312,7 @@ export class Banner {
   hide() {
     clearTimeout(this.timer);
     this.el.classList.remove('is-shown');
+    this.el.parentElement.classList.remove('has-banner');
     this.timer = setTimeout(() => { this.el.hidden = true; }, 350);
   }
 }
