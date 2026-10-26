@@ -8,12 +8,13 @@ sends each image with C-STORE. C-ECHO is DICOM's "ping": it proves a real
 DICOM service answered, not just an open TCP port.
 
     clinic-dicom send <host> [port]           make one synthetic study and C-STORE it
-    clinic-dicom echo <host> [port] [secs]    C-ECHO, exit 0 if the archive answered
+    clinic-dicom echo <host> [port] [secs]    C-ECHO: exit 0 answered, 1 blocked, 2 error
 
 Every study is synthetic: invented patients (the same ones the EMR knows),
 generated pixels, and "SYNTHETIC" written into the patient comments.
 """
 import datetime
+import errno
 import json
 import logging
 import math
@@ -141,15 +142,44 @@ def send(host, port, timeout=10):
     return 0 if stored == len(images) else 1
 
 
+def tcp_open(host, port, timeout):
+    """0 if a TCP connection opens, 1 if refused or no answer, 2 on an error."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return 0
+    except socket.gaierror as e:
+        print(f"dicom: cannot resolve {host}: {e}", file=sys.stderr)
+        return 2
+    except (ConnectionRefusedError, TimeoutError, socket.timeout):
+        return 1
+    except OSError as e:
+        if e.errno in (errno.EHOSTUNREACH, errno.ENETUNREACH, errno.EHOSTDOWN):
+            return 1
+        print(f"dicom: connecting to {host}:{port} failed: {e}", file=sys.stderr)
+        return 2
+
+
 def echo(host, port, timeout):
+    """Exit status as clinic-probe: 0 the archive answered the echo, 1 the
+    network gave no way through, 2 something answered but the echo failed."""
+    # First the plain network question, so "blocked" and "a DICOM service
+    # said no" are told apart.
+    reach = tcp_open(host, port, timeout)
+    if reach:
+        return reach
     assoc = associate(host, port, [Verification], timeout)
     if not assoc.is_established:
-        return 1
+        print(f"dicom: {host}:{port} accepted TCP but no DICOM association "
+              f"({'rejected' if assoc.is_rejected else 'aborted or no answer'})", file=sys.stderr)
+        return 2
     try:
         status = assoc.send_c_echo()
     finally:
         assoc.release()
-    return 0 if status and status.Status == 0x0000 else 1
+    if status and status.Status == 0x0000:
+        return 0
+    print(f"dicom: C-ECHO to {host}:{port} did not succeed", file=sys.stderr)
+    return 2
 
 
 def main(argv):

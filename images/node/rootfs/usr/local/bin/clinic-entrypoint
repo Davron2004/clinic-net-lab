@@ -9,7 +9,8 @@ log() { echo "[$(date +%H:%M:%S)] ${HOSTNAME}: $*"; }
 # If booting fails, stay up (without the ready marker) so the problem can be
 # inspected. Exiting would make Docker restart the container, and a restarted
 # container has lost the network cables containerlab plugged in.
-trap 'log "boot failed at line $LINENO"; exec sleep infinity' ERR
+stay_up() { while :; do sleep infinity & wait; done; }
+trap 'log "boot failed at line $LINENO"; stay_up' ERR
 
 wait_for_cables() {
     local want=${CLAB_INTFS:-1} have=0
@@ -82,11 +83,15 @@ case "${ROLE:-host}" in
 esac
 
 start_services
-# Optional per-node hook, mounted from the repo (used by later stages).
+# Optional per-node hook, mounted from the repo (the remote doctor's laptop
+# uses it to bring up its VPN).
 [ -x /etc/clinic/node/post-up.sh ] && /etc/clinic/node/post-up.sh
 wait_for_ports
 
 touch /run/clinic/ready
 log "ready"
 # Keep the container alive; if a service dies the node stays up for debugging.
-exec sleep infinity
+# Waiting (rather than exec'ing sleep) keeps this script around to collect
+# services that exit, so they do not linger as zombie processes. Anything
+# orphaned further down is collected by tini, process 1 (see the Dockerfile).
+stay_up

@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""clinic-sweep <timeout> <proto>:<ip>:<port> ...
+
+The default-deny sweep's probe, run on one machine: try many ports on many
+machines at once and say which ones the network let through. Prints one
+JSON line per target: {"target": "tcp:10.10.20.10:22", "result": ...} with
+result "reached", "blocked" or "error".
+
+It asks the same question as clinic-probe's "reach": did the target answer
+at all? A refused connection counts as reached, because the packet got
+through the network. That way a hole in the firewall shows up even on a port
+where nothing happens to be listening today.
+
+    tcp  reached if the connection opened or was refused
+    udp  reached if anything came back: an answer, or "port unreachable"
+         (port 53 sends a real DNS question, other ports a few bytes)
+"""
+import errno
+import json
+import socket
+import struct
+import sys
+from concurrent.futures import ThreadPoolExecutor
+
+NO_ANSWER = {errno.EHOSTUNREACH, errno.ENETUNREACH, errno.EHOSTDOWN}
+
+
+def dns_question():
+    # ID, flags (recursion desired), one question: example.org, type A, class IN.
+    name = b"".join(bytes([len(p)]) + p for p in (b"example", b"org")) + b"\0"
+    return struct.pack("!HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0) + name + struct.pack("!HH", 1, 1)
+
+
+def probe(spec, timeout):
+    proto, ip, port = spec.split(":")
+    port = int(port)
+    kind = socket.SOCK_STREAM if proto == "tcp" else socket.SOCK_DGRAM
+    s = socket.socket(socket.AF_INET, kind)
+    s.settimeout(timeout)
+    try:
+        s.connect((ip, port))
+        if proto == "tcp":
+            return "reached"
+        s.send(dns_question() if port == 53 else b"clinic-sweep\n")
+        s.recv(512)
+        return "reached"
+    except ConnectionRefusedError:
+        return "reached"
+    except (TimeoutError, socket.timeout):
+        return "blocked"
+    except OSError as e:
+        return "blocked" if e.errno in NO_ANSWER else "error"
+    finally:
+        s.close()
+
+
+def main(argv):
+    if len(argv) < 3:
+        print(__doc__, file=sys.stderr)
+        return 2
+    timeout, specs = float(argv[1]), argv[2:]
+    with ThreadPoolExecutor(256) as pool:   # all at once: the run takes about one timeout
+        for spec, result in zip(specs, pool.map(lambda t: probe(t, timeout), specs)):
+            print(json.dumps({"target": spec, "result": result}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

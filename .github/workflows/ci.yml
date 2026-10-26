@@ -60,13 +60,18 @@ jobs:
       - name: Start the flat "before" network
         run: ./lab up flat
 
-      - name: Isolation tests (must catch the flat network's violations)
+      - name: Isolation tests (must find exactly the flat network's known violations)
         run: ./lab test --expect-violations
 
-      - name: Ransomware scenario on the flat network (must succeed, proving the test is real)
+      - name: Ransomware scenario on the flat network (must breach and encrypt every record)
+        # Exit 1 means "breached"; 2 would mean the scenario itself failed,
+        # which must not pass for a breach.
         run: |
-          if ./lab attack --fast; then
-            echo "The attack was contained on the flat network; the scenario is not testing anything." >&2
+          code=0
+          ./lab attack --fast || code=$?
+          encrypted=$(jq .encrypted run/results/attack.json)
+          if [ "$code" -ne 1 ] || [ "$encrypted" -ne 12 ]; then
+            echo "Expected a breach (exit 1) with 12 encrypted records, got exit $code and $encrypted encrypted." >&2
             exit 1
           fi
 

@@ -7,8 +7,8 @@ the imaging workstation sends a new study to the archive, the lab analyzer
 sends a result to the EMR, someone prints, a guest browses. The firewall
 logs each new connection like any other, so the clinic map looks alive.
 
-It stays out of the way of measurements: while the isolation suite or an
-attack scenario is running (seen in run/events.jsonl) it pauses, so their
+It stays out of the way of measurements: the isolation suite and attack
+scenarios ask it to pause and wait until it has (lab.quiet_traffic), so their
 results and the map's replay of them contain only their own traffic.
 
 Started by ./lab up in its own container; set CLINIC_TRAFFIC=0 to turn it
@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from labkit import lab  # noqa: E402
 
 MIN_GAP, MAX_GAP = 2.5, 7.0   # seconds between actions
-STALE_RUN = 300               # a test/attack with no end event after this long is assumed dead
+STALE_PAUSE = 600             # a pause flag older than this was left by a crashed run
 
 # (weight, from, to, port, probe kind for the event, what, command run on the source machine)
 # {ip} is the target's address. Commands must exit 0 when the action worked.
@@ -61,43 +61,68 @@ REMOTE = {
 }
 
 
-class Pauser:
-    """Follows run/events.jsonl and reports whether a test or attack is running."""
+class Generator:
+    """Starts routine actions, and pauses for measurements (see lab.quiet_traffic).
 
-    def __init__(self):
-        self.path = lab.RUN / "events.jsonl"
-        self.offset = 0
-        self.running_since = None
+    Each tick it reads the pause flags, and only starts an action if there
+    are none. It acknowledges a flag (lists it in run/traffic-state.json)
+    once no action is in flight, so a measurement that sees its flag listed
+    knows no routine packet will cross its path.
+    """
 
-    def busy(self):
+    TICK = 0.2   # seconds between looks at the pause flags
+
+    def __init__(self, policy, actions):
+        self.policy = policy
+        self.actions = actions
+        self.weights = [a[0] for a in actions]
+        self.lock = threading.Lock()
+        self.inflight = 0
+
+    def pause_flags(self):
         try:
-            size = self.path.stat().st_size
-            if size < self.offset:   # file was emptied (fresh lab): start over
-                self.offset = 0
-            with open(self.path) as f:
-                f.seek(self.offset)
-                data = f.read()
+            now = time.time()
+            # A flag left behind by a measurement that crashed expires.
+            return sorted(f.name for f in lab.PAUSE_DIR.iterdir()
+                          if not f.name.startswith(".") and now - f.stat().st_mtime < STALE_PAUSE)
         except FileNotFoundError:
-            return False
-        # Only consume complete lines; a half-written line is read next time.
-        complete = data[:data.rfind("\n") + 1]
-        self.offset += len(complete.encode())
-        for line in complete.splitlines():
-            try:
-                kind = json.loads(line).get("type")
-            except ValueError:
-                continue
-            if kind in ("test-start", "scenario-start"):
-                self.running_since = time.time()
-            elif kind in ("test-end", "scenario-end"):
-                self.running_since = None
-        if self.running_since and time.time() - self.running_since > STALE_RUN:
-            self.running_since = None
-        return self.running_since is not None
+            return []
+
+    def write_state(self, flags):
+        with self.lock:
+            inflight = self.inflight
+        state = {"ts": time.time(), "inflight": inflight, "paused_for": flags if inflight == 0 else []}
+        tmp = lab.TRAFFIC_STATE.with_name(lab.TRAFFIC_STATE.name + ".tmp")
+        tmp.write_text(json.dumps(state))
+        tmp.replace(lab.TRAFFIC_STATE)   # atomic: readers never see half a file
+
+    def run_one(self, action):
+        try:
+            run_action(self.policy, action)
+        finally:
+            with self.lock:
+                self.inflight -= 1
+
+    def loop(self):
+        next_at = time.time() + random.uniform(MIN_GAP, MAX_GAP)
+        while True:
+            flags = self.pause_flags()
+            if flags:
+                # Paused: start nothing, and after the pause wait a full gap again.
+                next_at = time.time() + random.uniform(MIN_GAP, MAX_GAP)
+            elif time.time() >= next_at:
+                action = random.choices(self.actions, self.weights)[0]
+                with self.lock:
+                    self.inflight += 1
+                # In the background, so a slow action never stalls the rhythm.
+                threading.Thread(target=self.run_one, args=(action,), daemon=True).start()
+                next_at = time.time() + random.uniform(MIN_GAP, MAX_GAP)
+            self.write_state(flags)
+            time.sleep(self.TICK)
 
 
 def pacs_credentials(policy):
-    code, out = lab.sh(lab.container(policy, "pacs"), "cat /run/clinic/pacs-credentials")
+    code, out = lab.sh(lab.container(policy, "pacs"), "cat /run/clinic/pacs-credentials", timeout=10)
     return out.strip() if code == 0 else ""
 
 
@@ -121,16 +146,9 @@ def main():
     policy = lab.load_policy()
     net = lab.variant()
     actions = COMMON + [REMOTE[net]] if net in REMOTE else COMMON
-    weights = [a[0] for a in actions]
-    pauser = Pauser()
+    lab.RUN.mkdir(parents=True, exist_ok=True)
     print(f"clinic traffic: {len(actions)} kinds of routine actions on the {net} network", flush=True)
-    while True:
-        time.sleep(random.uniform(MIN_GAP, MAX_GAP))
-        if pauser.busy():
-            continue
-        action = random.choices(actions, weights)[0]
-        # Run in the background so a slow action never stalls the rhythm.
-        threading.Thread(target=run_action, args=(policy, action), daemon=True).start()
+    Generator(policy, actions).loop()
 
 
 if __name__ == "__main__":

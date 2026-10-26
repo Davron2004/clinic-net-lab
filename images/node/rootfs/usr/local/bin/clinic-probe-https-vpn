@@ -3,7 +3,9 @@
 # tunnel (wg0), even for an address the laptop would normally reach directly.
 # It models a laptop set to send everything through the clinic (a "full
 # tunnel" setting, or malware): the clinic must still refuse to be its route
-# to the rest of the internet. A machine with no tunnel fails the probe.
+# to the rest of the internet. A machine with no tunnel cannot send anything
+# through one, so that counts as blocked (exit 1), not as an error.
+# Exit status as clinic-probe: 0 reached, 1 blocked, 2 error.
 ip link show wg0 >/dev/null 2>&1 || { echo "no VPN tunnel on this machine" >&2; exit 1; }
-exec curl -skf -o /dev/null --interface wg0 --connect-timeout "${3:-3}" --max-time $((${3:-3} + 2)) \
+exec clinic-curl-verdict -skf -o /dev/null --interface wg0 --connect-timeout "${3:-3}" --max-time $((${3:-3} + 2)) \
     "https://$1:${2:-443}/"

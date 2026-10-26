@@ -12,11 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         dnsmasq-base udhcpc wireguard-tools \
         samba smbclient \
         python3 python3-pip openssl ca-certificates \
-        netcat-openbsd socat curl dnsutils tcpdump procps \
+        netcat-openbsd socat curl dnsutils tcpdump procps tini \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --break-system-packages "pynetdicom==2.1.1" "pydicom==2.4.4"
 
 COPY rootfs/ /
 RUN chmod +x /usr/local/bin/*
 
-ENTRYPOINT ["/usr/local/bin/clinic-entrypoint"]
+# tini runs as process 1: it reaps finished background processes (probes,
+# services) that would otherwise pile up as zombies, and passes signals on.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/clinic-entrypoint"]

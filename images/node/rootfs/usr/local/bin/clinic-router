@@ -7,8 +7,10 @@
 set -euo pipefail
 cfg=/etc/clinic/router
 
-sysctl -qw net.ipv4.ip_forward=1
-bash "$cfg/interfaces.sh"
+# Order matters: the firewall is loaded before any interface comes up, and
+# the router only starts forwarding packets between networks at the very end,
+# so there is no moment when traffic passes unfiltered.
+sysctl -qw net.ipv4.ip_forward=0
 
 # Firewall logs: nftables hands logged packets to ulogd over NFLOG group 0,
 # ulogd writes one JSON object per packet to /var/log/clinic/firewall.jsonl.
@@ -34,14 +36,18 @@ file="/var/log/clinic/firewall.jsonl"
 CONF
 ulogd -d -c /etc/ulogd.conf
 
+# The rules match interfaces by name, so they can load before those exist.
 nft -f "$cfg/nftables.nft"
+bash "$cfg/interfaces.sh"
 
 if [ -f "$cfg/dnsmasq.conf" ]; then
     dnsmasq --conf-file="$cfg/dnsmasq.conf"
 fi
 # The VPN comes after the firewall, so the tunnel is never up unprotected,
-# and after DNS/DHCP, so waiting for the laptop's key never delays the clinic.
+# and after DNS/DHCP, so guest Wi-Fi leases do not wait for the laptop's key.
 if [ -f "$cfg/wireguard.sh" ]; then
     bash "$cfg/wireguard.sh"
 fi
+# Last: start routing between the clinic's networks.
+sysctl -qw net.ipv4.ip_forward=1
 echo "router: $(nft list ruleset | grep -c 'accept\|drop') firewall rules loaded"

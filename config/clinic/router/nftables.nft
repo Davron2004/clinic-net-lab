@@ -3,8 +3,11 @@
 #
 # Default deny: a packet crossing from one zone to another is dropped unless
 # a rule below allows it. Each allow rule names one source, one destination
-# and one service. Every allowed new connection and every drop is logged
-# (NFLOG group 0 -> ulogd -> firewall.jsonl); the prefix is the rule's name.
+# and one service. Every new connection allowed between zones and every drop
+# is logged (NFLOG group 0 -> ulogd -> firewall.jsonl); the prefix is the
+# rule's name. Not logged: DNS, DHCP and ping to the router itself (accepted
+# below without a log rule), and traffic inside a zone, which never reaches
+# the router (the switch stops it instead; see switch/ports.conf).
 #
 # The isolation tests in policy/clinic.yml check this file from the outside.
 # They are written separately on purpose: if a rule here is wrong, the
@@ -30,6 +33,22 @@ define SIEM          = 10.10.90.10
 
 table inet clinic {
 
+    # Anti-spoofing, before anything else looks at a packet. Every rule below
+    # trusts the source address, so check it is plausible: a packet must
+    # arrive on the interface the router would use to reach its source
+    # ("reverse path"). A guest claiming the EMR server's address arrives on
+    # the guest VLAN, but the EMR lives on the servers VLAN: dropped. This
+    # covers every zone, the VPN and the internet side. It cannot catch a
+    # machine borrowing a neighbour's address in its own subnet; see the
+    # README's limits.
+    chain prerouting {
+        type filter hook prerouting priority filter; policy accept;
+        iif "lo" accept
+        # A guest asking for an address has none yet: DHCP comes from 0.0.0.0.
+        iifname $GUEST ip saddr 0.0.0.0 udp sport 68 udp dport 67 accept
+        meta nfproto ipv4 fib saddr . iif oif missing log group 0 prefix "deny:spoofed" drop
+    }
+
     # Traffic addressed to the router itself.
     chain input {
         type filter hook input priority filter; policy drop;
@@ -39,14 +58,15 @@ table inet clinic {
 
         # Ping the gateway from inside: basic troubleshooting.
         iifname { $STAFF, $SERVERS, $DEVICES, $PRINTERS, $GUEST, $SECURITY } icmp type echo-request accept
-        # DNS for zones that browse by name. Devices and printers get none:
-        # DNS queries can smuggle data out, and they only need fixed IPs.
-        iifname { $STAFF, $SERVERS, $GUEST } meta l4proto { tcp, udp } th dport 53 accept
+        # DNS for zones that browse by name. Servers, devices and printers get
+        # none: DNS queries can smuggle data out, and they only need fixed IPs.
+        iifname { $STAFF, $GUEST } meta l4proto { tcp, udp } th dport 53 accept
         # DHCP leases for guest Wi-Fi.
         iifname $GUEST udp dport 67 accept
         # The VPN's front door: the only thing the internet may send the
         # router. WireGuard answers nothing but a valid handshake from an
-        # enrolled key, so to a scanner this port looks closed.
+        # enrolled key, so a scanner gets the same silence here as from every
+        # dropped port ("open|filtered"): it cannot tell a VPN is listening.
         iifname $WAN udp dport 51820 log group 0 prefix "allow:vpn-handshake" accept
 
         log group 0 prefix "deny:to-router" drop

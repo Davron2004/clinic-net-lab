@@ -7,12 +7,22 @@
 # archive's web interface. The password is a second lock; keeping strangers
 # away from the lock in the first place is the network's job.
 # With PACS_AUTH=user:password set, it logs in and requires a real answer.
+#
+# Exit status as clinic-probe: 0 reached, 1 blocked, 2 error (including
+# "something answered on that port, but it is not the archive").
 set -uo pipefail
 host=$1; port=${2:-8042}; t=${3:-3}
 url="http://$host:$port/system"
 if [ -n "${PACS_AUTH:-}" ]; then
-    curl -sf -o /dev/null --connect-timeout "$t" --max-time $((t + 2)) -u "$PACS_AUTH" "$url"
-    exit
+    exec clinic-curl-verdict -sf -o /dev/null --connect-timeout "$t" --max-time $((t + 2)) -u "$PACS_AUTH" "$url"
 fi
-headers=$(curl -s -o /dev/null -D - --connect-timeout "$t" --max-time $((t + 2)) "$url") || exit 1
-grep -qi '^www-authenticate:.*orthanc' <<<"$headers"
+headers=$(curl -s -o /dev/null -D - --connect-timeout "$t" --max-time $((t + 2)) "$url")
+rc=$?
+case $rc in
+    0)    ;;
+    7|28) exit 1 ;;
+    *)    echo "curl failed with exit code $rc" >&2; exit 2 ;;
+esac
+grep -qi '^www-authenticate:.*orthanc' <<<"$headers" && exit 0
+echo "something answered on $host:$port, but not the archive's login prompt" >&2
+exit 2

@@ -16,7 +16,7 @@
 # values to run several labs side by side. CLINIC_TRAFFIC=0 starts the lab
 # without routine background traffic.
 # CLINIC_MONITORING=0 runs without the SIEM (Wazuh): boots faster, uses
-# ~350 MB less memory and skips the 2.7 GB Wazuh image.
+# about 500 MiB less memory and skips the Wazuh image (2.7 GB on disk).
 # CLINIC_MONITORING_WAIT (default 180) caps how many seconds ./lab up waits
 # for the SIEM before carrying on without it.
 set -euo pipefail
@@ -185,7 +185,12 @@ up() {
     # Password agents need to enroll with the SIEM: new for every deployment.
     (umask 077; od -An -N24 -tx1 /dev/urandom | tr -d ' \n' > "$RUN/secrets/authd.pass")
     say "Starting the $variant network"
-    clab deploy -t "$variant.clab.yml" --name "$LAB" >/dev/null
+    # containerlab is chatty (and warns about checksum offload on every
+    # machine, which is harmless here). Keep its log, show it only on failure.
+    if ! clab deploy -t "$variant.clab.yml" --name "$LAB" > "$RUN/logs/deploy.log" 2>&1; then
+        cat "$RUN/logs/deploy.log" >&2
+        fail "containerlab could not start the $variant network (log above, also in run/logs/deploy.log)"
+    fi
     wait_ready
     wait_monitoring
     map_start
@@ -218,6 +223,6 @@ case "$cmd" in
              printf '  %-28s %s\n' "monitoring (SIEM)" "$s" ;;
     shell)   [ $# -ge 1 ] || fail "usage: ./lab shell <node>"
              docker exec -it "clab-$LAB-$1" bash ;;
-    help|-h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' ;;
+    help|-h|--help) sed -n '2,21p' "$0" | sed -e 's/^# \{0,1\}//' -e "s|localhost:8080|localhost:$MAP_PORT|" ;;
     *)       fail "unknown command '$cmd' (try ./lab help)" ;;
 esac

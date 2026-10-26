@@ -42,7 +42,9 @@ nodes:
 # the router address on the source machine's own network.
 #
 # Probe kinds (images/node/rootfs/usr/local/bin/clinic-probe*):
-#   tcp           a TCP connection opens
+#   tcp           a TCP connection opens (refused counts as blocked)
+#   reach         the target answers at all, even if only to refuse the
+#                 connection: tests the network path, not the service
 #   https         an HTTPS page loads
 #   dns           the DNS server answers a lookup
 #   dicom         DICOM C-ECHO: a real DICOM archive accepts us and answers
@@ -50,6 +52,14 @@ nodes:
 #   pacs-web      the image archive's web viewer / API answers (login prompt)
 #   https-direct  HTTPS out of the machine's own cable, never through a VPN
 #   https-vpn     HTTPS forced into the machine's VPN tunnel
+#   whoami        HTTPS to the public website, which reports the address it saw
+#   spoofed-syn   TCP SYNs that claim another machine's address (spoof_as);
+#                 the target watches for them, since replies go elsewhere
+#
+# For every blocked flow the suite also asks the target itself whether the
+# service is running; if it is not, the block proves nothing and the flow is
+# an ERROR. no_service: true marks the rare flow where nothing runs behind
+# the port by design (use sparingly, with a comment saying why).
 flows:
   # ---- allowed: each one is a job someone needs done ----
   - { id: A01, from: reception-pc, to: emr,      port: 443,  probe: https, expect: allow, what: "Front desk opens patient charts in the EMR" }
@@ -62,6 +72,11 @@ flows:
   - { id: A08, from: guest-laptop, to: internet, port: 443,  probe: https, expect: allow, what: "Guests browse the web" }
   - { id: A09, from: guest-laptop, to: gateway,  port: 53,   probe: dns,   expect: allow, what: "Guests look up web addresses (DNS)" }
   - { id: A10, from: doctor-pc,    to: gateway,  port: 53,   probe: dns,   expect: allow, what: "Staff look up web addresses (DNS)" }
+  # The website reports the address it sees (probe whoami); seen_as says
+  # which it must be. Without address translation (NAT) it would see the
+  # PC's private address, and replies could not find their way back on the
+  # real internet.
+  - { id: A11, from: reception-pc, to: internet, port: 443,  probe: whoami, seen_as: clinic-wan, expect: allow, what: "Staff web traffic leaves from the clinic's one public address (NAT)" }
 
   # ---- forbidden: guest Wi-Fi is the outside world ----
   - { id: D01, from: guest-laptop, to: emr,          port: 443,  probe: https, expect: deny, what: "Guest reaches the EMR web app" }
@@ -90,7 +105,10 @@ flows:
   - { id: D19, from: reception-pc, to: imaging,      port: 445,                expect: deny, what: "Staff PC reaches a medical device" }
 
   # ---- forbidden: the internet ----
-  - { id: D20, from: internet,     to: clinic-wan,   port: 443,                expect: deny, what: "Internet opens a connection to the clinic" }
+  # Nothing listens on the clinic's public address, so a plain TCP probe
+  # would be "blocked" even with no firewall at all. probe: reach counts a
+  # refusal as reached, so these fail the moment the firewall stops dropping.
+  - { id: D20, from: internet,     to: clinic-wan,   port: 443,  probe: reach, expect: deny, what: "Internet opens a connection to the clinic" }
   - { id: D21, from: internet,     to: emr,          port: 443,  probe: https, expect: deny, what: "Internet reaches the EMR directly" }
   # D22 forces the probe out of the laptop's own cable (https-direct), around
   # the tunnel. Plain https would now go through the VPN and succeed (that is
@@ -106,6 +124,25 @@ flows:
   - { id: D27, from: guest-laptop, to: emr,          port: 2575, probe: hl7,   expect: deny, what: "Guest injects fake lab results into the EMR (HL7)" }
   - { id: D28, from: guest-laptop, to: pacs,         port: 4242, probe: dicom, expect: deny, what: "Guest pulls images from the archive (DICOM)" }
 
+  # ---- forbidden: inside a zone ----
+  # Machines in the same zone share a subnet, so their traffic never passes
+  # the firewall. The switch stops it instead: staff PC and server ports are
+  # "isolated" (config/clinic/switch/ports.conf), like the device and guest ports.
+  - { id: D29, from: reception-pc, to: doctor-pc,    port: 445,                expect: deny, what: "Infected staff PC spreads to another staff PC (SMB)" }
+  - { id: D30, from: reception-pc, to: doctor-pc,    port: 3389,               expect: deny, what: "Staff PC remote-desktops into another staff PC" }
+  - { id: D31, from: pacs,         to: emr,          port: 445,                expect: deny, what: "Compromised image archive reaches the patient records share" }
+  - { id: D32, from: pacs,         to: emr,          port: 22,                 expect: deny, what: "Compromised image archive opens an admin shell on the EMR server" }
+  - { id: D33, from: emr,          to: pacs,         port: 8042, probe: pacs-web, expect: deny, what: "Compromised EMR server reaches the archive's admin API" }
+
+  # ---- forbidden: borrowing another machine's address ----
+  # The router checks each packet's source address against where it came
+  # from (nftables.nft, chain prerouting). Without that check, a guest could
+  # send packets as the EMR server and the guest-web rule would let them out.
+  - { id: D35, from: guest-laptop, to: internet,     port: 443,  probe: spoofed-syn, spoof_as: emr, expect: deny, what: "Guest sends packets pretending to be the EMR server" }
+
+  # ---- forbidden: servers have no use for DNS ----
+  - { id: D34, from: emr,          to: gateway,      port: 53,   probe: dns,   expect: deny, what: "EMR server uses DNS (a covert way out)" }
+
   # ---- remote access: a doctor working from home ----
   # Segmented clinic: a WireGuard VPN that leads to the EMR web app and
   # nothing else. Flat clinic: no VPN; remote access is a port forward to the
@@ -117,7 +154,7 @@ flows:
   - { id: R04, from: home-doctor,  to: emr,          port: 22,                 expect: deny, what: "VPN user opens an admin shell on the EMR server" }
   - { id: R05, from: home-doctor,  to: doctor-pc,    port: 3389,               expect: deny, what: "VPN user remote-desktops into a staff PC" }
   - { id: R06, from: home-doctor,  to: internet,     port: 443,  probe: https-vpn, expect: deny, what: "Laptop uses the clinic as its route to the internet (through the VPN)" }
-  - { id: R07, from: internet,     to: clinic-wan,   port: 3389,               expect: deny, what: "Anyone on the internet reaches a staff PC's remote desktop (port forward)" }
+  - { id: R07, from: internet,     to: clinic-wan,   port: 3389, probe: reach, expect: deny, what: "Anyone on the internet reaches a staff PC's remote desktop (port forward)" }
 
   # ---- security monitoring (the SIEM) ----
   # probe "reach" tests the network path: a refused connection counts as
@@ -130,3 +167,37 @@ flows:
   - { id: S06, from: imaging,      to: siem,     port: 1514, probe: reach, expect: deny,  what: "Infected medical device floods or tampers with the SIEM" }
   - { id: S07, from: pacs,         to: siem,     port: 1515, probe: reach, expect: deny,  what: "A server without an agent talks to the SIEM" }
   - { id: S08, from: siem,         to: internet, port: 443,  probe: https, expect: deny,  what: "SIEM sends the clinic's security logs to the internet" }
+
+# What the flat "before" network gets wrong, flow by flow. CI runs
+# ./lab test --expect-violations on the flat network, which passes only if
+# the suite finds exactly these (no more, no fewer, and no errors). A flow
+# that silently stops being caught there means the test lost its teeth.
+flat_known:
+  # Forbidden flows that get through: on one flat subnet every machine
+  # reaches every other, and the router lets everything out to the internet.
+  # Only the internet side is closed (D20, D21, D22 and the VPN-only R02-R06
+  # hold), except the remote desktop port forward (R07).
+  violations: [D01, D02, D03, D04, D05, D06, D07, D08, D09, D10, D11, D12, D13, D14, D15,
+               D16, D17, D18, D19, D23, D24, D25, D26, D27, D28, D29, D30, D31, D32, D33,
+               D34, D35, R07, S04, S05, S06, S07, S08]
+  # Needed flows that do not work: there is no VPN, so the doctor at home
+  # cannot open the EMR (they use the remote desktop port forward instead).
+  broken: [R01]
+
+# The default-deny sweep (tests/isolation.py): from each source it tries
+# every port below on one target in every other zone, and on the router.
+# Anything that gets through must be an allowed flow above, or listed in
+# also_allowed (things the firewall allows a whole zone, beyond the one
+# machine a flow above happens to name).
+sweep:
+  sources: [reception-pc, emr, imaging, printer, guest-laptop, siem, internet, home-doctor]
+  targets: [reception-pc, emr, imaging, printer, guest-phone, siem, internet]
+  tcp: [22, 23, 25, 53, 80, 135, 139, 443, 445, 631, 1514, 1515, 2575, 3306, 3389, 4242, 5900, 8042, 8080, 9100]
+  udp: [53, 123, 161, 5353]
+  also_allowed:
+    - { from: reception-pc, to: printer,  proto: tcp, port: 631 }   # printing over IPP (staff-print)
+    - { from: reception-pc, to: internet, proto: tcp, port: 80 }    # plain-HTTP web (staff-web)
+    - { from: reception-pc, to: gateway,  proto: udp, port: 53 }    # DNS (A10 is the doctor's PC)
+    - { from: reception-pc, to: gateway,  proto: tcp, port: 53 }    # DNS over TCP, for large answers
+    - { from: guest-laptop, to: internet, proto: tcp, port: 80 }    # plain-HTTP web (guest-web)
+    - { from: guest-laptop, to: gateway,  proto: tcp, port: 53 }    # DNS over TCP
