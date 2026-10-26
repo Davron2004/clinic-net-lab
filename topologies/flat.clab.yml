@@ -12,7 +12,7 @@ mgmt:
 topology:
   defaults:
     kind: linux
-    image: clinic-net-lab/node:dev
+    image: clinic-net-lab/node:${CLINIC_IMAGE_TAG:=dev}
     # No management interface: every packet a machine sends must go through
     # the lab network, so nothing can sneak around the firewall.
     network-mode: none
