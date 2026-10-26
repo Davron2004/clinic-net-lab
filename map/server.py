@@ -24,6 +24,7 @@ import ipaddress
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -45,6 +46,7 @@ RETRANSMIT_SECONDS = 10      # TCP resends an unanswered SYN; same attempt, same
 MATCH_SECONDS = 15           # a test result can arrive this long after its first packet
 UNLOGGED_WAIT_SECONDS = 1.5  # how long a result waits for its firewall line before drawing on its own
 STALE_RUN_SECONDS = 90       # a test or attack with no news for this long has died
+ALERT_GRACE_SECONDS = 20     # alerts trail what caused them; this long after a run still belongs to it
 HEARTBEAT_SECONDS = 15       # keeps idle browser connections open
 
 # Programs the page's buttons may start. Nothing else can be run from the page.
@@ -95,14 +97,22 @@ class Topology:
                 "ip": None if ip in (None, "dhcp") else str(ip),
                 "dhcp": ip == "dhcp",
                 "icon": spec.get("icon"),
+                # Reaches the clinic through the VPN (segmented clinic only).
+                "vpn": bool(spec.get("tunnel_ip")) and net == "clinic",
             }
         self.flows = [
             {k: f.get(k) for k in ("id", "from", "to", "port", "expect", "what")}
             for f in policy.get("flows") or []
         ]
+        # Policy flows by (from, to, port). Two flows can share that and
+        # disagree (the home laptop reaching the EMR through the VPN is
+        # allowed, without it is not); a firewall line cannot tell them
+        # apart, so such a connection gets no expectation from policy.
         self.expect = {}
         for f in self.flows:
-            self.expect.setdefault((f["from"], self.resolve(f["to"]), f["port"]), f)
+            key = (f["from"], self.resolve(f["to"]), f["port"])
+            other = self.expect.get(key)
+            self.expect[key] = f if key not in self.expect or (other and other["expect"] == f["expect"]) else None
         self.ips = {}
         self._dhcp_checked = 0.0
         self._index()
@@ -131,6 +141,28 @@ class Topology:
 
     def resolve(self, name):
         return self.alias.get(name, name)
+
+    def expectation(self, a, b, port):
+        """The policy flow for a connection, if policy has one."""
+        flow = self.expect.get((a, b, port))
+        if flow is None and self.forwarded(a, b):
+            flow = self.expect.get((a, ROUTER, port))
+        return flow or {}
+
+    def forwarded(self, a, b):
+        """From outside straight to a machine inside: the only way is a port
+        forward on the clinic's public address, so policy describes it as a
+        connection to the router (clinic-wan)."""
+        return self.outside(a) and b != ROUTER and not self.outside(b)
+
+    def same_connection(self, probe_key, line_key):
+        """Does a test result describe the connection the firewall logged?"""
+        if probe_key == line_key:
+            return True
+        (pa, pb, pport), (la, lb, lport) = probe_key, line_key
+        # A test aimed at the public address; the firewall logged the inside
+        # machine it was forwarded to.
+        return pa == la and pport == lport and pb == ROUTER and self.forwarded(la, lb)
 
     def zone_of(self, node):
         if node and node.startswith("@"):
@@ -263,6 +295,7 @@ class Engine:
         self.clients = set()
         self.seq = 0
         self.variant = None
+        self.monitoring = None
         self.policy_mtime = None
         self.topo = None
         self.job = None
@@ -279,7 +312,8 @@ class Engine:
         self.scenario = {"running": False, "node": None, "attempts": 0, "breaches": 0,
                          "result": None, "ts": None}
         self.records = None
-        self.alerts = deque(maxlen=50)
+        self.alerts = deque(maxlen=200)
+        self.windows = deque(maxlen=20)  # when tests and attacks ran, to explain alerts
         self.activity = deque(maxlen=8)
         self.counters = {"allowed": 0, "blocked": 0, "violations": 0}
         self.seen = {}        # retransmit dedupe: 5-tuple -> last time seen
@@ -306,6 +340,10 @@ class Engine:
             mtime = policy_file.stat().st_mtime
         except FileNotFoundError:
             mtime = None
+        try:
+            self.monitoring = (self.run / "monitoring").read_text().strip() or None
+        except OSError:
+            self.monitoring = None
         if not force and net == self.variant and mtime == self.policy_mtime:
             return
         changed_net = net != self.variant
@@ -385,6 +423,7 @@ class Engine:
                 "alerts": list(self.alerts),
                 "activity": list(self.activity),
                 "counters": self.counters,
+                "monitoring": self.monitoring,
                 "job": self.job,
                 "last_job": self.last_job,
                 "now": time.time(),
@@ -455,11 +494,12 @@ class Engine:
             return
         match = (a, b, port)
         for p in self.pending:
-            if p["key"] == match:
+            if self.topo.same_connection(p["key"], match):
                 self.pending.remove(p)
-                self._flow_from_probe(p["event"], observed=verdict, rule=rule, ts=ts)
+                # Drawn where the packet really went (a port forward's target).
+                self._flow_from_probe(p["event"], observed=verdict, rule=rule, ts=ts, to=b)
                 return
-        policy = self.topo.expect.get(match) or {}
+        policy = self.topo.expectation(a, b, port)
         fid = self._flow(a, b, port, proto, verdict, policy.get("expect"), "firewall",
                          what=policy.get("what"), test=policy.get("id"), rule=rule, ts=ts)
         self.recent.append({"key": match, "at": now, "fid": fid})
@@ -469,6 +509,13 @@ class Engine:
     def _on_event(self, ev, quiet=False):
         kind = ev.get("type")
         ts = ev.get("ts") or time.time()
+        if kind in ("test-start", "scenario-start"):
+            self.windows.append({"kind": "test" if kind == "test-start" else "attack", "start": ts, "end": None})
+        elif kind in ("test-end", "scenario-end"):
+            for w in reversed(self.windows):
+                if w["kind"] == ("test" if kind == "test-end" else "attack") and w["end"] is None:
+                    w["end"] = ts
+                    break
         if kind == "test-start":
             self.tests = {"running": True, "total": ev.get("total", 0), "results": {},
                           "summary": self.tests["summary"], "ts": ts}
@@ -535,7 +582,7 @@ class Engine:
         key = (a, b, ev.get("port"))
         now = time.time()
         for r in self.recent:
-            if r["key"] == key:
+            if self.topo.same_connection(key, r["key"]):
                 # Already drawn from the firewall log when the packet left.
                 self.recent.remove(r)
                 return
@@ -545,8 +592,8 @@ class Engine:
         else:
             self._flow_from_probe(ev)
 
-    def _flow_from_probe(self, ev, observed=None, rule=None, ts=None):
-        self._flow(ev.get("from"), self.topo.resolve(ev.get("to")), ev.get("port"),
+    def _flow_from_probe(self, ev, observed=None, rule=None, ts=None, to=None):
+        self._flow(ev.get("from"), to or self.topo.resolve(ev.get("to")), ev.get("port"),
                    "udp" if ev.get("probe") == "dns" else "tcp",
                    observed or ev.get("observed"), ev.get("expect"), ev.get("source") or "test",
                    what=ev.get("what"), test=ev.get("id"), rule=rule, ts=ts or ev.get("ts"))
@@ -585,12 +632,37 @@ class Engine:
         alert = {k: al.get(k) for k in ("ts", "level", "rule_id", "title", "node", "src_ip",
                                         "dst_ip", "dst_port", "category", "source")}
         alert["ts"] = alert["ts"] or time.time()
+        alert["title"] = self._name_addresses(alert)
         # Point the map at the machines involved, by name.
         alert["src"] = self.topo.endpoint(al["src_ip"]) if al.get("src_ip") else None
         alert["dst"] = self.topo.endpoint(al["dst_ip"]) if al.get("dst_ip") else None
+        # The test suite does forbidden things on purpose, so the alerts it
+        # sets off are expected; the page shows them quietly.
+        alert["during"] = self._window_at(alert["ts"])
         self.alerts.append(alert)
         if not quiet:
             self._publish({"kind": "alert", "alert": alert})
+
+    def _name_addresses(self, alert):
+        """Say "Guest laptop" where the monitor could only say "Guest Wi-Fi
+        device 10.10.50.110" (it does not know DHCP leases; the map does)."""
+        title = alert["title"]
+        for ip in {alert.get("src_ip"), alert.get("dst_ip")} - {None}:
+            node = self.topo.endpoint(ip)
+            if node not in self.topo.nodes:
+                continue
+            label = self.topo.nodes[node]["label"]
+            for zone in self.topo.zones.values():
+                title = title.replace(f"{zone['label']} device {ip}", label)
+            title = re.sub(rf"(?<![\d.]){re.escape(ip)}(?![\d.])", label, title)
+        return title
+
+    def _window_at(self, ts):
+        for w in reversed(self.windows):
+            end = w["end"] if w["end"] is not None else time.time()
+            if w["start"] - 1 <= ts <= end + ALERT_GRACE_SECONDS:
+                return w["kind"]
+        return None
 
     # -- buttons
 

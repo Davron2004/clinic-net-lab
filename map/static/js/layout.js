@@ -46,7 +46,18 @@ const ZONE_FONT = `600 13.5px ${FONT_STACK}`;
 const VLAN_FONT = '500 10.5px ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 
 export function wrapLabel(text, maxWidth, font = LABEL_FONT, maxLines = 2) {
-  const words = String(text).split(/\s+/);
+  const lines = wrapWords(String(text), maxWidth, font);
+  if (lines.length <= maxLines) return lines;
+  // "Security monitor (SIEM)": the bracketed part is a nice-to-have.
+  const plain = String(text).replace(/\s*\([^)]*\)\s*$/, '');
+  if (plain !== text) return wrapLabel(plain, maxWidth, font, maxLines);
+  const kept = lines.slice(0, maxLines);
+  kept[maxLines - 1] = `${kept[maxLines - 1]}…`;
+  return kept;
+}
+
+function wrapWords(text, maxWidth, font) {
+  const words = text.split(/\s+/);
   const lines = [];
   let line = '';
   for (const word of words) {
@@ -59,11 +70,6 @@ export function wrapLabel(text, maxWidth, font = LABEL_FONT, maxLines = 2) {
     }
   }
   if (line) lines.push(line);
-  if (lines.length > maxLines) {
-    const kept = lines.slice(0, maxLines);
-    kept[maxLines - 1] = `${kept[maxLines - 1]}…`;
-    return kept;
-  }
   return lines;
 }
 
@@ -313,7 +319,9 @@ export function wires(L, variant) {
     const n = NORMAL[z.face];
     // In the flat network, machines inside are not wired through zones.
     if (variant === 'flat' && z.face !== 'right') continue;
-    out.push({ kind: 'trunk', zone: z.id, d: `M ${pt(z.gate)} ${trunk(z.gate, n, R.ports[z.id])}` });
+    // Remote machines that come in over the VPN get a tunnel, not a plain link.
+    const vpn = variant !== 'flat' && z.face === 'right' && z.nodes.some((node) => node.vpn);
+    out.push({ kind: 'trunk', vpn, zone: z.id, d: `M ${pt(z.gate)} ${trunk(z.gate, n, R.ports[z.id])}` });
     for (const node of z.nodes) {
       const e = endpoint(L, node.id);
       out.push({ kind: 'wire', zone: z.id, d: `M ${pt(e.at)} ${wireUp(e)}` });

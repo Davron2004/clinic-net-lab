@@ -183,7 +183,7 @@ function applyState(s) {
   tests.setFlows(topo.flows, topo.variant);
   tests.render(s.tests);
   records.render(s.records, topo);
-  alerts.render(s.alerts || [], nodeLabel);
+  alerts.render(s.alerts || [], nodeLabel, s.monitoring);
   rebuild();
   scene.setCounters(s.counters || {});
   captions.clear();
@@ -236,13 +236,24 @@ function handle(msg) {
       break;
     case 'alert': {
       const a = msg.alert;
-      s.alerts = [...(s.alerts || []), a].slice(-50);
-      alerts.add(a);
-      const where = a.node || a.src || a.dst;
-      toasts.show({ kind: 'alert', title: a.title, text: where ? nodeLabel(where) : '' });
+      s.alerts = [...(s.alerts || []), a].slice(-200);
+      const group = alerts.add(a);
+      // The test suite sets off alerts on purpose (that is the monitor
+      // working). They go in the list, without pop-ups or flashing machines.
+      if (a.during === 'test') break;
+      const where = group.where;
+      toasts.show({
+        kind: group.level >= 12 ? 'critical' : 'alert',
+        key: group.key,
+        count: group.count,
+        title: group.title,
+        text: where ? nodeLabel(where) : '',
+        seconds: group.level >= 15 ? 12 : 7,
+      });
       for (const id of new Set([a.node, a.src].filter(Boolean))) {
+        if (!scene.layout?.nodes[id]) continue;
         app.alerted.set(id, Date.now() + 12000);
-        scene.pulse(id, 'alert');
+        if (group.count === 1) scene.pulse(id, 'alert');
       }
       refreshBadges();
       setTimeout(refreshBadges, 12100);

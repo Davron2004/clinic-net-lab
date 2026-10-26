@@ -389,15 +389,17 @@ button { font: inherit; }
 .banner-title { font-size: 17px; font-weight: 650; letter-spacing: -0.012em; line-height: 1.3; }
 .banner-text { margin-top: 2px; font-size: 13.5px; color: var(--text-2); line-height: 1.4; }
 
+/* Bottom-left of the map: under the outside world, the one corner that
+   stays empty in both networks however many zones there are. */
 .toasts {
   position: absolute;
-  right: 16px;
-  bottom: 4px;
+  left: 16px;
+  bottom: 6px;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
   gap: 8px;
-  width: 290px;
+  width: 268px;
   z-index: 6;
   pointer-events: none;
 }
@@ -410,7 +412,7 @@ button { font: inherit; }
   backdrop-filter: blur(18px) saturate(160%);
   -webkit-backdrop-filter: blur(18px) saturate(160%);
   box-shadow: inset 0 0 0 1px rgba(255, 179, 64, 0.36), 0 14px 40px rgba(0, 0, 0, 0.45);
-  transform: translateY(12px);
+  transform: translateX(-12px);
   opacity: 0;
   transition: opacity 0.3s ease, transform 0.4s cubic-bezier(.2, .9, .3, 1);
   pointer-events: auto;
@@ -418,9 +420,21 @@ button { font: inherit; }
 }
 .toast.is-shown { opacity: 1; transform: none; }
 .toast--error { box-shadow: inset 0 0 0 1px rgba(255, 95, 87, 0.45), 0 14px 40px rgba(0, 0, 0, 0.45); }
+.toast--critical { box-shadow: inset 0 0 0 1.5px rgba(255, 45, 135, 0.7), 0 14px 40px rgba(255, 45, 135, 0.18); }
+.toast--critical .toast-icon { color: var(--breach); }
+.toast-count { color: var(--warn); font-weight: 600; font-variant-numeric: tabular-nums; }
+.toast--critical .toast-count { color: #ff8cbf; }
 .toast-icon { color: var(--warn); margin-top: 1px; }
 .toast--error .toast-icon { color: var(--block); }
-.toast-title { font-size: 13.5px; font-weight: 600; line-height: 1.35; }
+.toast-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
 .toast-text { margin-top: 2px; font-size: 12.5px; color: var(--text-2); }
 
 /* ------------------------------------------------------------ sidebar cards */
@@ -522,8 +536,8 @@ button { font: inherit; }
 }
 .cells {
   display: grid;
-  grid-template-columns: repeat(12, 1fr);
-  gap: 4px;
+  grid-template-columns: repeat(14, 1fr);
+  gap: 3px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -532,12 +546,12 @@ button { font: inherit; }
   display: grid;
   place-items: center;
   aspect-ratio: 1;
-  border-radius: 5px;
+  border-radius: 4px;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
   color: #07130c;
   transition: background-color 0.25s, box-shadow 0.25s;
 }
-.cell .ic { width: 12px; height: 12px; stroke-width: 2.6; }
+.cell .ic { width: 11px; height: 11px; stroke-width: 2.8; }
 .cell--pass { background: var(--ok); box-shadow: none; }
 .cell--violation { background: var(--breach); box-shadow: none; color: #fff; }
 .cell--broken { background: var(--warn); box-shadow: none; color: #1d1200; }
@@ -569,6 +583,27 @@ button { font: inherit; }
 .alert--high { --sev: #ff8a3d; }
 .alert--critical { --sev: var(--breach); }
 .alert-title { font-size: 13.5px; font-weight: 600; line-height: 1.35; }
+.alert-count {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--sev);
+  background: color-mix(in srgb, var(--sev) 16%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+.alert-tag {
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: rgba(255, 255, 255, 0.07);
+}
+.alert--expected .alert-title { color: var(--text-2); font-weight: 550; }
+.alert--expected .alert-sev { opacity: 0.45; }
 .alert-meta { margin-top: 2px; font-size: 12px; color: var(--text-3); }
 .alerts-empty {
   display: flex;
@@ -615,6 +650,10 @@ button { font: inherit; }
 
 .wire { fill: none; stroke: var(--wire); stroke-width: 1.5; }
 .wire--trunk { stroke-width: 2; }
+.wire--vpn { stroke: rgba(111, 155, 230, 0.6); stroke-dasharray: 1 5; stroke-width: 2.4; stroke-linecap: round; }
+.vpn-tag-pill { fill: #101827; stroke: rgba(111, 155, 230, 0.55); }
+.vpn-tag-icon { color: #8fb4f0; stroke-width: 2.2; }
+.vpn-tag-text { fill: #a9c4f2; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; }
 
 .router-card {
   fill: var(--router-fill);

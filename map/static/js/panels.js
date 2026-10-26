@@ -215,46 +215,92 @@ function severity(level) {
   return 'low';
 }
 
+// Alerts arrive in bursts (ransomware sets off one per encrypted record), so
+// repeats of the same rule on the same machine within a minute become one
+// line with a count. Alerts the test suite set off on purpose are marked as
+// such and kept quiet.
+const GROUP_SECONDS = 60;
+
+// "Patient record deleted: patient-0003.json" and "...: patient-0007.json"
+// are the same thing happening twice.
+function mergeTitles(a, b) {
+  if (a === b) return a;
+  const pa = a.split(':')[0];
+  return pa === b.split(':')[0] && pa.length < a.length ? pa : b;
+}
+
+export function alertKey(a) {
+  return `${a.rule_id}|${a.node || a.src || ''}`;
+}
+
 export class AlertsCard {
   constructor() {
     this.el = $('#alerts-card');
-    this.alerts = [];
+    this.groups = [];
+    this.monitoring = null;
   }
 
-  render(alerts, nodeLabel) {
-    this.alerts = alerts.slice(-30);
+  render(alerts, nodeLabel, monitoring) {
     this.nodeLabel = nodeLabel;
+    this.monitoring = monitoring;
+    this.groups = [];
+    for (const a of alerts) this.merge(a);
     this.draw();
   }
 
+  // Returns the group the alert landed in.
   add(alert) {
-    this.alerts.push(alert);
-    this.alerts = this.alerts.slice(-30);
-    this.draw(alert);
+    const g = this.merge(alert);
+    this.draw(g);
+    return g;
+  }
+
+  merge(a) {
+    const key = alertKey(a);
+    const g = this.groups.find((x) => x.key === key && a.ts - x.ts < GROUP_SECONDS);
+    if (g) {
+      g.count += 1;
+      g.ts = Math.max(g.ts, a.ts);
+      g.level = Math.max(g.level, a.level || 0);
+      g.title = mergeTitles(g.title, a.title);
+      g.during = g.during && a.during === g.during ? g.during : null;
+      return g;
+    }
+    const fresh = { key, title: a.title, count: 1, ts: a.ts, level: a.level || 0, during: a.during, where: a.node || a.src || a.dst };
+    this.groups.push(fresh);
+    this.groups = this.groups.slice(-40);
+    return fresh;
   }
 
   draw(fresh = null) {
-    const items = [...this.alerts].reverse();
-    const list = items.length
-      ? items.map((a) => {
-        const where = a.node || a.src || a.dst;
-        const who = where ? this.nodeLabel(where) : null;
-        return `<li class="alert alert--${severity(a.level || 0)}${a === fresh ? ' is-new' : ''}">
+    const items = [...this.groups].sort((a, b) => b.ts - a.ts);
+    let list;
+    if (items.length) {
+      list = items.map((g) => {
+        const who = g.where ? this.nodeLabel(g.where) : null;
+        const tag = g.during === 'test' ? '<span class="alert-tag">During test</span>' : '';
+        const count = g.count > 1 ? `<span class="alert-count">×${g.count}</span>` : '';
+        return `<li class="alert alert--${severity(g.level)}${g.during === 'test' ? ' alert--expected' : ''}${g === fresh ? ' is-new' : ''}">
           <span class="alert-sev" aria-hidden="true"></span>
           <div class="alert-body">
-            <p class="alert-title">${esc(a.title)}</p>
-            <p class="alert-meta">${who ? `${esc(who)} · ` : ''}${timeAgo(a.ts)}</p>
+            <p class="alert-title">${esc(g.title)}${count}</p>
+            <p class="alert-meta">${tag}${who ? `${esc(who)} · ` : ''}${timeAgo(g.ts)}</p>
           </div>
         </li>`;
-      }).join('')
-      : `<li class="alerts-empty">${icon('bell')}<span>No alerts. Suspicious activity seen by the security monitor shows up here.</span></li>`;
+      }).join('');
+    } else if (this.monitoring === 'off') {
+      list = `<li class="alerts-empty">${icon('bell')}<span>Security monitoring is off for this lab, so nothing raises alerts.</span></li>`;
+    } else {
+      list = `<li class="alerts-empty">${icon('bell')}<span>No alerts. Suspicious activity seen by the security monitor shows up here.</span></li>`;
+    }
+    const total = items.reduce((n, g) => n + g.count, 0);
     this.el.innerHTML = `
-      <header class="card-head"><h2>Alerts</h2><span class="card-meta">${items.length ? items.length : ''}</span></header>
+      <header class="card-head"><h2>Alerts</h2><span class="card-meta">${total || ''}</span></header>
       <ol class="alerts">${list}</ol>`;
   }
 
   tick() {
-    if (this.alerts.length) this.draw();
+    if (this.groups.length) this.draw();
   }
 }
 
@@ -341,23 +387,46 @@ export class Status {
 export class Toasts {
   constructor() {
     this.el = $('#toasts');
+    this.open = new Map();
   }
 
-  show({ kind = 'alert', title, text, seconds = 6 }) {
-    const t = document.createElement('div');
-    t.className = `toast toast--${kind}`;
-    t.setAttribute('role', 'status');
+  // key: toasts with the same key update one another (a burst of the same
+  // alert counts up on one toast instead of stacking).
+  show({ kind = 'alert', title, text, seconds = 6, key = null, count = 1 }) {
+    let t = key ? this.open.get(key) : null;
+    if (!t || !t.isConnected) {
+      t = document.createElement('div');
+      t.setAttribute('role', 'status');
+      t.addEventListener('click', () => this.close(t));
+      this.el.append(t);
+      while (this.el.children.length > 2) this.close(this.el.firstElementChild, true);
+      requestAnimationFrame(() => t.classList.add('is-shown'));
+      if (key) {
+        t.dataset.key = key;
+        this.open.set(key, t);
+      }
+    }
+    t.className = `toast toast--${kind}${t.classList.contains('is-shown') ? ' is-shown' : ''}`;
+    const glyph = { error: 'x', critical: 'alert' }[kind] || 'bell';
+    // The count sits on the second line: the title may be clamped.
+    const times = count > 1 ? `<span class="toast-count">${count} times</span>` : '';
+    const meta = [text ? esc(text) : '', times].filter(Boolean).join(' · ');
     t.innerHTML = `
-      <span class="toast-icon">${icon(kind === 'error' ? 'x' : 'bell')}</span>
-      <div class="toast-body"><p class="toast-title">${esc(title)}</p>${text ? `<p class="toast-text">${esc(text)}</p>` : ''}</div>`;
-    this.el.append(t);
-    while (this.el.children.length > 2) this.el.firstElementChild.remove();
-    requestAnimationFrame(() => t.classList.add('is-shown'));
-    const close = () => {
-      t.classList.remove('is-shown');
-      setTimeout(() => t.remove(), 400);
-    };
-    t.addEventListener('click', close);
-    setTimeout(close, seconds * 1000);
+      <span class="toast-icon">${icon(glyph)}</span>
+      <div class="toast-body"><p class="toast-title">${esc(title)}</p>${meta ? `<p class="toast-text">${meta}</p>` : ''}</div>`;
+    clearTimeout(t.timer);
+    t.timer = setTimeout(() => this.close(t), seconds * 1000);
+  }
+
+  close(t, now = false) {
+    if (!t) return;
+    clearTimeout(t.timer);
+    if (t.dataset.key && this.open.get(t.dataset.key) === t) this.open.delete(t.dataset.key);
+    if (now) {
+      t.remove();
+      return;
+    }
+    t.classList.remove('is-shown');
+    setTimeout(() => t.remove(), 400);
   }
 }

@@ -112,8 +112,20 @@ export class Scene {
 
   _wires() {
     for (const w of wires(this.L, this.variant)) {
-      svgEl('path', { class: `wire wire--${w.kind}`, d: w.d, 'data-zone': w.zone }, this.layers.wires);
+      const path = svgEl('path', { class: `wire wire--${w.kind}${w.vpn ? ' wire--vpn' : ''}`, d: w.d, 'data-zone': w.zone }, this.layers.wires);
+      if (w.vpn) this._vpnTag(path);
     }
+  }
+
+  // A small "VPN" tag with a lock on the tunnel.
+  _vpnTag(path) {
+    // Placed outside the building: the tunnel runs over the internet.
+    const p = path.getPointAtLength(path.getTotalLength() * 0.2);
+    const g = svgEl('g', { class: 'vpn-tag', transform: `translate(${p.x} ${p.y})` }, this.layers.wires);
+    svgEl('rect', { class: 'vpn-tag-pill', x: -24, y: -10, width: 48, height: 20, rx: 10 }, g);
+    useIcon('lock', -17, -6, 12, g, 'vpn-tag-icon');
+    const t = svgEl('text', { class: 'vpn-tag-text', x: -2, y: 4 }, g);
+    t.textContent = 'VPN';
   }
 
   _router() {
