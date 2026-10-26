@@ -12,6 +12,7 @@ zones:
   devices:  { label: "Medical devices", vlan: 30, subnet: 10.10.30.0/24 }
   printers: { label: "Printers & fax",  vlan: 40, subnet: 10.10.40.0/24 }
   guest:    { label: "Guest Wi-Fi",     vlan: 50, subnet: 10.10.50.0/24 }
+  security: { label: "Security monitoring", vlan: 90, subnet: 10.10.90.0/24 }
   internet: { label: "Internet" }
   remote:   { label: "Remote access" }
 
@@ -28,6 +29,7 @@ nodes:
   printer:      { zone: printers, label: "Printer / fax",     ip: { clinic: 10.10.40.10,  flat: 10.10.0.40 } }
   guest-laptop: { zone: guest,    label: "Guest laptop",      ip: { clinic: dhcp,         flat: dhcp } }
   guest-phone:  { zone: guest,    label: "Guest phone",       ip: { clinic: dhcp,         flat: dhcp } }
+  siem:         { zone: security, label: "Security monitor (SIEM)", ip: { clinic: 10.10.90.10, flat: 10.10.0.90 } }
   internet:     { zone: internet, label: "Public website",    ip: { clinic: 203.0.113.10, flat: 203.0.113.10 } }
   home-doctor:  { zone: remote,   label: "Doctor at home",    ip: { clinic: 192.0.2.50,   flat: 192.0.2.50 } }
   # The clinic's public address, as seen from the internet.
@@ -79,3 +81,15 @@ flows:
   - { id: D20, from: internet,     to: clinic-wan,   port: 443,                expect: deny, what: "Internet opens a connection to the clinic" }
   - { id: D21, from: internet,     to: emr,          port: 443,  probe: https, expect: deny, what: "Internet reaches the EMR directly" }
   - { id: D22, from: home-doctor,  to: emr,          port: 443,  probe: https, expect: deny, what: "Home laptop reaches the EMR without the VPN" }
+
+  # ---- security monitoring (the SIEM) ----
+  # probe "reach" tests the network path: a refused connection counts as
+  # reached, so these pass even while Wazuh is still starting or switched off.
+  - { id: S01, from: emr,          to: siem,     port: 1514, probe: reach, expect: allow, what: "EMR server's security agent sends events to the SIEM" }
+  - { id: S02, from: emr,          to: siem,     port: 1515, probe: reach, expect: allow, what: "EMR server's security agent enrolls with the SIEM" }
+  - { id: S03, from: router,       to: siem,     port: 1514, probe: reach, expect: allow, what: "Router's security agent ships the firewall log to the SIEM" }
+  - { id: S04, from: reception-pc, to: siem,     port: 1515, probe: reach, expect: deny,  what: "Staff PC enrolls a fake agent with the SIEM" }
+  - { id: S05, from: guest-laptop, to: siem,     port: 1514, probe: reach, expect: deny,  what: "Guest reaches the SIEM" }
+  - { id: S06, from: imaging,      to: siem,     port: 1514, probe: reach, expect: deny,  what: "Infected medical device floods or tampers with the SIEM" }
+  - { id: S07, from: pacs,         to: siem,     port: 1515, probe: reach, expect: deny,  what: "A server without an agent talks to the SIEM" }
+  - { id: S08, from: siem,         to: internet, port: 443,  probe: https, expect: deny,  what: "SIEM sends the clinic's security logs to the internet" }

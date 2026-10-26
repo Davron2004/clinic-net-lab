@@ -1,0 +1,49 @@
+<!--
+  Wazuh agent settings shared by every monitored clinic machine.
+  clinic-svc-wazuh-agent fills in @MANAGER@ and @NAME@ at boot and appends
+  the machine's own profile (emr.xml, router.xml).
+-->
+<ossec_config>
+  <client>
+    <server>
+      <address>@MANAGER@</address>
+      <port>1514</port>
+      <protocol>tcp</protocol>
+    </server>
+    <!-- Enrollment: the agent asks the SIEM for its key on port 1515,
+         proving it knows the enrollment password (made fresh at every
+         ./lab up, never stored in the repo). If the SIEM is not up yet the
+         agent keeps asking, so boot order does not matter. -->
+    <enrollment>
+      <enabled>yes</enabled>
+      <manager_address>@MANAGER@</manager_address>
+      <port>1515</port>
+      <agent_name>@NAME@</agent_name>
+      <authorization_pass_path>etc/authd.pass</authorization_pass_path>
+      <!-- The SIEM loads new keys every 2 s (siem/Dockerfile); the default
+           20 s wait before connecting would only slow down the boot. -->
+      <delay_after_enrollment>5</delay_after_enrollment>
+    </enrollment>
+    <notify_time>10</notify_time>
+    <time-reconnect>60</time-reconnect>
+    <auto_restart>no</auto_restart>
+    <crypto_method>aes</crypto_method>
+  </client>
+
+  <!-- If the SIEM is unreachable, hold up to 5000 events and send them when
+       it comes back, instead of dropping them. -->
+  <client_buffer>
+    <disabled>no</disabled>
+    <queue_size>5000</queue_size>
+    <events_per_second>500</events_per_second>
+  </client_buffer>
+
+  <!-- Everything the clinic does not need is off: less CPU, less memory,
+       and no stream of low-value findings for nobody to read. -->
+  <rootcheck><disabled>yes</disabled></rootcheck>
+  <wodle name="syscollector"><disabled>yes</disabled></wodle>
+  <sca><enabled>no</enabled></sca>
+  <active-response><disabled>yes</disabled></active-response>
+
+  <logging><log_format>plain</log_format></logging>
+</ossec_config>

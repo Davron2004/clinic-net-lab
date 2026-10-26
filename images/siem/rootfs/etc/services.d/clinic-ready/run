@@ -1,0 +1,16 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+# Runs after the Wazuh image's init has started the manager. Marks the SIEM
+# ready once the daemons that matter are up: remoted (agents' events),
+# authd (enrollment), analysisd (rules) and integratord (run/alerts.jsonl).
+ready() {
+    local status
+    status=$(/var/ossec/bin/wazuh-control status)
+    for d in wazuh-remoted wazuh-authd wazuh-analysisd wazuh-integratord; do
+        grep -q "$d is running" <<<"$status" || return 1
+    done
+}
+until ready; do sleep 1; done
+touch /run/clinic/monitoring-ready
+echo "SIEM ready: accepting agents"
+exec sleep infinity

@@ -1,0 +1,51 @@
+#!/bin/bash
+# Starts the Wazuh security agent (SERVICES="... wazuh-agent").
+#
+#   WAZUH_MANAGER      address of the SIEM
+#   WAZUH_PROFILE      what this machine watches: emr or router (default: hostname)
+#   CLINIC_MONITORING  0 = monitoring is switched off, do nothing
+#
+# Monitoring must never hold up the clinic, so this runs in the background
+# (the boot does not wait for it) and leaves two markers for ./lab up:
+#   /run/clinic/agent-pending  this machine has an agent that is starting
+#   /run/clinic/agent-ready    it is enrolled, connected and watching
+set -euo pipefail
+
+log() { echo "[$(date +%H:%M:%S)] ${HOSTNAME}: wazuh-agent: $*"; }
+
+if [ "${CLINIC_MONITORING:-1}" = "0" ]; then
+    log "monitoring is switched off"
+    exit 0
+fi
+
+manager=${WAZUH_MANAGER:?WAZUH_MANAGER is not set}
+profile=${WAZUH_PROFILE:-$HOSTNAME}
+conf_dir=/etc/clinic/wazuh-agent
+ossec=/var/ossec
+touch /run/clinic/agent-pending
+
+# Start only after this machine has finished booting. On the EMR server that
+# means the records exist, so the agent's first fingerprint of the folder
+# includes them (otherwise every record would show up as "new").
+until [ -f /run/clinic/ready ]; do sleep 0.2; done
+
+sed -e "s/@MANAGER@/$manager/g" -e "s/@NAME@/$HOSTNAME/g" "$conf_dir/common.xml" > "$ossec/etc/ossec.conf"
+cat "$conf_dir/$profile.xml" >> "$ossec/etc/ossec.conf"
+install -o root -g wazuh -m 0640 /etc/clinic/secrets/authd.pass "$ossec/etc/authd.pass"
+
+# The agent enrolls by itself and retries until the SIEM answers, so it can
+# start before the SIEM is up.
+"$ossec/bin/wazuh-control" start >/dev/null
+log "started, enrolling with the SIEM at $manager"
+
+# What "ready" means for each profile, read from the agent's own log.
+case "$profile" in
+    emr)    watching="Real-time file integrity monitoring started" ;;
+    router) watching="Analyzing file: '/var/log/clinic/firewall.jsonl'" ;;
+    *)      watching="" ;;
+esac
+connected() { grep -q "status='connected'" "$ossec/var/run/wazuh-agentd.state" 2>/dev/null; }
+watching() { [ -z "$watching" ] || grep -qF "$watching" "$ossec/logs/ossec.log"; }
+until connected && watching; do sleep 0.5; done
+touch /run/clinic/agent-ready
+log "connected to the SIEM and watching ($profile)"
