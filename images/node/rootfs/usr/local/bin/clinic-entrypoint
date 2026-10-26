@@ -55,6 +55,20 @@ start_services() {
     done
 }
 
+# READY_PORTS="443 2575": do not report ready until these TCP ports accept
+# connections. Slow starters (the image archive takes a few seconds) would
+# otherwise fail the first test after boot for the wrong reason.
+wait_for_ports() {
+    local port
+    for port in ${READY_PORTS:-}; do
+        for _ in $(seq 1 600); do
+            if ss -Hltn "sport = :$port" | grep -q .; then continue 2; fi
+            sleep 0.1
+        done
+        log "nothing listening on port $port after 60s"; return 1
+    done
+}
+
 wait_for_cables
 log "role=${ROLE:-host} interfaces ready"
 mkdir -p /run/clinic
@@ -70,6 +84,7 @@ esac
 start_services
 # Optional per-node hook, mounted from the repo (used by later stages).
 [ -x /etc/clinic/node/post-up.sh ] && /etc/clinic/node/post-up.sh
+wait_for_ports
 
 touch /run/clinic/ready
 log "ready"

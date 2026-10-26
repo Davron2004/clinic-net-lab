@@ -1,0 +1,5 @@
+#!/bin/bash
+# clinic-probe-hl7 <host> [port] [timeout]: send a test-mode ORU^R01 lab
+# result over MLLP and pass only if the receiver answers MSA|AA (accepted).
+# An open TCP port is not enough: this proves an HL7 interface is listening.
+exec clinic-hl7 probe "$1" "${2:-2575}" "${3:-3}" >/dev/null

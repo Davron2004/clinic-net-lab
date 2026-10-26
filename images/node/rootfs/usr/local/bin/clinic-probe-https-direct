@@ -1,0 +1,6 @@
+#!/bin/bash
+# clinic-probe-https-direct <host> [port] [timeout]: HTTPS sent out of the
+# machine's own network cable (eth1), never through a VPN tunnel. On the
+# remote doctor's laptop this asks: "with the VPN off, can I still get in?"
+exec curl -skf -o /dev/null --interface eth1 --connect-timeout "${3:-3}" --max-time $((${3:-3} + 2)) \
+    "https://$1:${2:-443}/"
