@@ -14,7 +14,7 @@ trap 'log "boot failed at line $LINENO"; exec sleep infinity' ERR
 wait_for_cables() {
     local want=${CLAB_INTFS:-1} have=0
     for _ in $(seq 1 600); do
-        have=$(ls /sys/class/net | grep -cE '^eth[1-9][0-9]*$' || true)
+        have=$(find /sys/class/net -maxdepth 1 -name 'eth[1-9]*' | wc -l)
         [ "$have" -ge "$want" ] && return 0
         sleep 0.1
     done
@@ -47,7 +47,7 @@ start_services() {
     local svc
     for svc in ${SERVICES:-}; do
         case "$svc" in
-            listen:*) clinic-listen ${svc#listen:} & ;;
+            listen:*) clinic-listen "${svc#listen:}" & ;;
             emr)      clinic-emr & ;;
             web)      clinic-web & ;;
             *)        if command -v "clinic-svc-$svc" >/dev/null; then "clinic-svc-$svc" & else log "unknown service $svc"; false; fi ;;
