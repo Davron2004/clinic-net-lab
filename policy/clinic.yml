@@ -1,0 +1,80 @@
+# The clinic's network policy, written as plain expectations.
+#
+# This file is the source of truth for the isolation tests and the clinic
+# map. It is deliberately separate from the firewall config
+# (config/clinic/router/nftables.nft): the tests check the firewall from the
+# outside, by really sending packets from each machine, instead of trusting
+# that the rules say what we meant.
+
+zones:
+  staff:    { label: "Staff PCs",       vlan: 10, subnet: 10.10.10.0/24 }
+  servers:  { label: "Servers",         vlan: 20, subnet: 10.10.20.0/24 }
+  devices:  { label: "Medical devices", vlan: 30, subnet: 10.10.30.0/24 }
+  printers: { label: "Printers & fax",  vlan: 40, subnet: 10.10.40.0/24 }
+  guest:    { label: "Guest Wi-Fi",     vlan: 50, subnet: 10.10.50.0/24 }
+  internet: { label: "Internet" }
+  remote:   { label: "Remote access" }
+
+# ip: the address in the segmented clinic and in the flat "before" network.
+# "dhcp" means the address is read from the running machine.
+nodes:
+  router:       { zone: core,     label: "Router / firewall", ip: { clinic: 10.10.10.1,   flat: 10.10.0.1 } }
+  reception-pc: { zone: staff,    label: "Reception PC",      ip: { clinic: 10.10.10.11,  flat: 10.10.0.11 } }
+  doctor-pc:    { zone: staff,    label: "Doctor's PC",       ip: { clinic: 10.10.10.12,  flat: 10.10.0.12 } }
+  emr:          { zone: servers,  label: "EMR server",        ip: { clinic: 10.10.20.10,  flat: 10.10.0.10 } }
+  pacs:         { zone: servers,  label: "Image archive (PACS)", ip: { clinic: 10.10.20.20, flat: 10.10.0.20 } }
+  imaging:      { zone: devices,  label: "Imaging workstation", ip: { clinic: 10.10.30.10, flat: 10.10.0.30 } }
+  lab-analyzer: { zone: devices,  label: "Lab analyzer",      ip: { clinic: 10.10.30.11,  flat: 10.10.0.31 } }
+  printer:      { zone: printers, label: "Printer / fax",     ip: { clinic: 10.10.40.10,  flat: 10.10.0.40 } }
+  guest-laptop: { zone: guest,    label: "Guest laptop",      ip: { clinic: dhcp,         flat: dhcp } }
+  guest-phone:  { zone: guest,    label: "Guest phone",       ip: { clinic: dhcp,         flat: dhcp } }
+  internet:     { zone: internet, label: "Public website",    ip: { clinic: 203.0.113.10, flat: 203.0.113.10 } }
+  home-doctor:  { zone: remote,   label: "Doctor at home",    ip: { clinic: 192.0.2.50,   flat: 192.0.2.50 } }
+  # The clinic's public address, as seen from the internet.
+  clinic-wan:   { zone: core,     label: "Clinic public IP",  ip: { clinic: 198.51.100.2, flat: 198.51.100.2 }, container: router }
+
+# Every flow: from a machine, to a machine, on a service, and whether policy
+# allows it. probe is how the test checks it (default tcp). "gateway" means
+# the router address on the source machine's own network.
+flows:
+  # ---- allowed: each one is a job someone needs done ----
+  - { id: A01, from: reception-pc, to: emr,      port: 443,  probe: https, expect: allow, what: "Front desk opens patient charts in the EMR" }
+  - { id: A02, from: doctor-pc,    to: emr,      port: 443,  probe: https, expect: allow, what: "Doctor opens patient charts in the EMR" }
+  - { id: A03, from: doctor-pc,    to: pacs,     port: 8042,               expect: allow, what: "Doctor views X-rays in the image archive" }
+  - { id: A04, from: reception-pc, to: printer,  port: 9100,               expect: allow, what: "Front desk prints a requisition" }
+  - { id: A05, from: imaging,      to: pacs,     port: 4242,               expect: allow, what: "Imaging workstation sends new images to the archive (DICOM)" }
+  - { id: A06, from: lab-analyzer, to: emr,      port: 2575,               expect: allow, what: "Lab analyzer sends results to the EMR (HL7)" }
+  - { id: A07, from: reception-pc, to: internet, port: 443,  probe: https, expect: allow, what: "Staff browse the web" }
+  - { id: A08, from: guest-laptop, to: internet, port: 443,  probe: https, expect: allow, what: "Guests browse the web" }
+  - { id: A09, from: guest-laptop, to: gateway,  port: 53,   probe: dns,   expect: allow, what: "Guests look up web addresses (DNS)" }
+  - { id: A10, from: doctor-pc,    to: gateway,  port: 53,   probe: dns,   expect: allow, what: "Staff look up web addresses (DNS)" }
+
+  # ---- forbidden: guest Wi-Fi is the outside world ----
+  - { id: D01, from: guest-laptop, to: emr,          port: 443,  probe: https, expect: deny, what: "Guest reaches the EMR web app" }
+  - { id: D02, from: guest-laptop, to: emr,          port: 445,                expect: deny, what: "Guest reaches the patient records file share" }
+  - { id: D03, from: guest-laptop, to: pacs,         port: 8042,               expect: deny, what: "Guest reaches the image archive" }
+  - { id: D04, from: guest-laptop, to: reception-pc, port: 3389,               expect: deny, what: "Guest remote-desktops into the reception PC" }
+  - { id: D05, from: guest-laptop, to: printer,      port: 9100,               expect: deny, what: "Guest prints to (or attacks) the clinic printer" }
+  - { id: D06, from: guest-laptop, to: guest-phone,  port: 8080,               expect: deny, what: "One guest device reaches another (client isolation)" }
+
+  # ---- forbidden: medical devices do one job only ----
+  - { id: D07, from: imaging,      to: internet,     port: 443,  probe: https, expect: deny, what: "Imaging workstation reaches the internet" }
+  - { id: D08, from: imaging,      to: emr,          port: 445,                expect: deny, what: "Imaging workstation reaches the patient records share" }
+  - { id: D09, from: imaging,      to: reception-pc, port: 445,                expect: deny, what: "Imaging workstation spreads to a staff PC (SMB)" }
+  - { id: D10, from: imaging,      to: doctor-pc,    port: 3389,               expect: deny, what: "Imaging workstation remote-desktops into a staff PC" }
+  - { id: D11, from: imaging,      to: pacs,         port: 8042,               expect: deny, what: "Imaging workstation reaches the archive's admin API (could delete studies)" }
+  - { id: D12, from: imaging,      to: gateway,      port: 53,   probe: dns,   expect: deny, what: "Imaging workstation uses DNS (a covert way out)" }
+  - { id: D13, from: lab-analyzer, to: internet,     port: 443,  probe: https, expect: deny, what: "Lab analyzer reaches the internet" }
+
+  # ---- forbidden: printers, servers, staff least privilege ----
+  - { id: D14, from: printer,      to: internet,     port: 443,  probe: https, expect: deny, what: "Printer phones home to the internet" }
+  - { id: D15, from: printer,      to: reception-pc, port: 445,                expect: deny, what: "Printer reaches a staff PC" }
+  - { id: D16, from: emr,          to: internet,     port: 443,  probe: https, expect: deny, what: "EMR server uploads to the internet (exfiltration)" }
+  - { id: D17, from: reception-pc, to: emr,          port: 445,                expect: deny, what: "Staff PC touches raw record files, bypassing the EMR app" }
+  - { id: D18, from: doctor-pc,    to: emr,          port: 22,                 expect: deny, what: "Staff PC opens an admin shell on the EMR server" }
+  - { id: D19, from: reception-pc, to: imaging,      port: 445,                expect: deny, what: "Staff PC reaches a medical device" }
+
+  # ---- forbidden: the internet ----
+  - { id: D20, from: internet,     to: clinic-wan,   port: 443,                expect: deny, what: "Internet opens a connection to the clinic" }
+  - { id: D21, from: internet,     to: emr,          port: 443,  probe: https, expect: deny, what: "Internet reaches the EMR directly" }
+  - { id: D22, from: home-doctor,  to: emr,          port: 443,  probe: https, expect: deny, what: "Home laptop reaches the EMR without the VPN" }

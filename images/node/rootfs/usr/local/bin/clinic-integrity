@@ -1,0 +1,12 @@
+#!/bin/bash
+# Compares the records folder with its boot-time fingerprint.
+# Prints JSON: {"total":12,"intact":12,"changed":0,"missing":0,"added":0}
+set -uo pipefail
+cd /srv/emr/records
+total=$(wc -l < /run/clinic/records.sha256)
+changed=$(sha256sum --quiet -c /run/clinic/records.sha256 2>/dev/null | grep -c 'FAILED$' || true)
+missing=$(sha256sum --quiet -c /run/clinic/records.sha256 2>&1 | grep -c 'No such file' || true)
+added=$(comm -13 <(awk '{print $2}' /run/clinic/records.sha256 | sort) <(ls -1 | sort) | wc -l)
+intact=$((total - changed - missing))
+printf '{"total":%d,"intact":%d,"changed":%d,"missing":%d,"added":%d}\n' \
+    "$total" "$intact" "$changed" "$missing" "$added"

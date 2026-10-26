@@ -1,0 +1,14 @@
+#!/bin/bash
+# "The internet": the ISP side of the clinic's WAN link, a public website,
+# a public DNS resolver, and the home network of a remote doctor.
+set -euo pipefail
+sysctl -qw net.ipv4.ip_forward=1
+ip link set eth1 up; ip addr add 198.51.100.1/24 dev eth1   # clinic's ISP uplink
+ip link set eth2 up; ip addr add 192.0.2.1/24 dev eth2      # doctor's home ISP
+ip addr add 203.0.113.10/32 dev lo                          # a public website + DNS
+# A hostile internet would happily route packets for private addresses
+# toward the clinic. Model that, so the firewall (not luck) is what stops them.
+ip route add 10.10.0.0/16 via 198.51.100.2
+# Every public name resolves to the public website.
+dnsmasq --listen-address=203.0.113.10 --bind-interfaces --no-resolv --no-hosts \
+        --address=/#/203.0.113.10 --log-facility=/var/log/dnsmasq.log

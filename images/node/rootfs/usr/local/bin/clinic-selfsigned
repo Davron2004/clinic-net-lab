@@ -1,0 +1,5 @@
+#!/bin/bash
+# clinic-selfsigned <path-prefix> <common-name>: throwaway TLS cert, made at boot, never stored.
+set -euo pipefail
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=$2" \
+    -keyout "$1.key" -out "$1.crt" >/dev/null 2>&1

@@ -1,0 +1,41 @@
+#!/bin/bash
+# Router and firewall. Config lives in /etc/clinic/router (mounted from the repo):
+#   interfaces.sh  addresses and VLAN sub-interfaces
+#   nftables.nft   the firewall policy
+#   dnsmasq.conf   DNS (and DHCP for the guest Wi-Fi)
+set -euo pipefail
+cfg=/etc/clinic/router
+
+sysctl -qw net.ipv4.ip_forward=1
+bash "$cfg/interfaces.sh"
+
+# Firewall logs: nftables hands logged packets to ulogd over NFLOG group 0,
+# ulogd writes one JSON object per packet to /var/log/clinic/firewall.jsonl.
+plugdir=$(dirname "$(find /usr/lib -name 'ulogd_inppkt_NFLOG.so' | head -1)")
+mkdir -p /var/log/clinic
+cat > /etc/ulogd.conf <<CONF
+[global]
+logfile="/var/log/clinic/ulogd.log"
+loglevel=5
+plugin="$plugdir/ulogd_inppkt_NFLOG.so"
+plugin="$plugdir/ulogd_raw2packet_BASE.so"
+plugin="$plugdir/ulogd_filter_IFINDEX.so"
+plugin="$plugdir/ulogd_filter_IP2STR.so"
+plugin="$plugdir/ulogd_output_JSON.so"
+stack=log1:NFLOG,base1:BASE,ifi1:IFINDEX,ip2str1:IP2STR,json1:JSON
+
+[log1]
+group=0
+
+[json1]
+sync=1
+file="/var/log/clinic/firewall.jsonl"
+CONF
+ulogd -d -c /etc/ulogd.conf
+
+nft -f "$cfg/nftables.nft"
+
+if [ -f "$cfg/dnsmasq.conf" ]; then
+    dnsmasq --conf-file="$cfg/dnsmasq.conf"
+fi
+echo "router: $(nft list ruleset | grep -c 'accept\|drop') firewall rules loaded"

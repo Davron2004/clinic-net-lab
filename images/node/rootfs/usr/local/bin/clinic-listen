@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""Stand-in for services we do not need to run for real (RDP, SSH, JetDirect...).
+
+Listens on the given TCP ports, accepts connections, writes a short banner
+and records who connected. Usage: clinic-listen 445,3389
+"""
+import asyncio
+import json
+import sys
+import time
+
+BANNERS = {
+    22: b"SSH-2.0-OpenSSH_9.2\r\n",
+    9100: b"@PJL INFO STATUS\r\nCODE=10001\r\nDISPLAY=\"READY\"\r\n",
+    631: b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+    8080: b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+}
+LOG = "/var/log/clinic/connections.jsonl"
+
+
+def record(port, peer):
+    line = json.dumps({"ts": time.time(), "port": port, "from": peer[0]})
+    print(line, flush=True)
+    with open(LOG, "a") as f:
+        f.write(line + "\n")
+
+
+def handler(port):
+    async def handle(reader, writer):
+        record(port, writer.get_extra_info("peername"))
+        writer.write(BANNERS.get(port, b""))
+        try:
+            await asyncio.wait_for(writer.drain(), 2)
+            await asyncio.wait_for(reader.read(1024), 1)
+        except (asyncio.TimeoutError, ConnectionError):
+            pass
+        writer.close()
+    return handle
+
+
+async def main(ports):
+    servers = [await asyncio.start_server(handler(p), "0.0.0.0", p) for p in ports]
+    await asyncio.gather(*(s.serve_forever() for s in servers))
+
+
+if __name__ == "__main__":
+    import os
+    os.makedirs("/var/log/clinic", exist_ok=True)
+    asyncio.run(main([int(p) for p in sys.argv[1].split(",")]))

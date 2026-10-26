@@ -1,0 +1,28 @@
+#!/bin/bash
+# A managed switch built from a Linux bridge.
+# /etc/clinic/switch/ports.conf lists each port as:  <port> access <vlan> [isolated]
+#                                                or:  <port> trunk  <vlan,vlan,...>
+# Access ports carry one VLAN untagged (the PC never sees a tag).
+# Trunk ports carry several VLANs, each frame tagged with 802.1Q.
+set -euo pipefail
+conf=/etc/clinic/switch/ports.conf
+
+ip link add br0 type bridge vlan_filtering 1 vlan_default_pvid 0
+ip link set br0 up
+
+grep -vE '^\s*(#|$)' "$conf" | while read -r port mode vlans flag _; do
+    ip link set "$port" master br0
+    ip link set "$port" up
+    case "$mode" in
+        access)
+            bridge vlan add dev "$port" vid "$vlans" pvid untagged
+            ;;
+        trunk)
+            for v in ${vlans//,/ }; do bridge vlan add dev "$port" vid "$v"; done
+            ;;
+        *) echo "bad mode $mode for $port"; exit 1 ;;
+    esac
+    # Client isolation: isolated ports can talk to the uplink but not to each other.
+    if [ "${flag:-}" = "isolated" ]; then bridge link set dev "$port" isolated on; fi
+done
+echo "switch: $(grep -cvE '^\s*(#|$)' "$conf") ports configured"

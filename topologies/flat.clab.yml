@@ -1,0 +1,76 @@
+# The flat clinic ("before"): one subnet, nothing between the machines.
+# Deploy with: ./lab up flat
+#
+#   internet ── router ── switch ── every machine, one subnet (10.10.0.0/24)
+name: clinic
+
+mgmt:
+  network: clinic-mgmt
+  ipv4-subnet: 172.31.254.0/24
+  ipv6-subnet: 3fff:172:31:254::/64
+
+topology:
+  defaults:
+    kind: linux
+    image: clinic-net-lab/node:dev
+    # No management interface: every packet a machine sends must go through
+    # the lab network, so nothing can sneak around the firewall.
+    network-mode: none
+
+  nodes:
+    router:
+      env: { ROLE: router }
+      binds:
+        - ../config/flat/router:/etc/clinic/router:ro
+        - ../run/logs:/var/log/clinic
+    switch:
+      env: { ROLE: switch }
+      binds:
+        - ../config/flat/switch:/etc/clinic/switch:ro
+    internet:
+      env: { ROLE: internet, SERVICES: "web" }
+
+    # staff
+    reception-pc:
+      env: { IP: 10.10.0.11/24, GW: 10.10.0.1, DNS: 10.10.0.1, SERVICES: "listen:445,3389" }
+    doctor-pc:
+      env: { IP: 10.10.0.12/24, GW: 10.10.0.1, DNS: 10.10.0.1, SERVICES: "listen:445,3389" }
+
+    # servers
+    emr:
+      env: { IP: 10.10.0.10/24, GW: 10.10.0.1, DNS: 10.10.0.1, SERVICES: "emr listen:22,2575" }
+    pacs:
+      env: { IP: 10.10.0.20/24, GW: 10.10.0.1, DNS: 10.10.0.1, SERVICES: "listen:4242,8042" }
+
+    # medical devices
+    imaging:
+      env: { IP: 10.10.0.30/24, GW: 10.10.0.1, DNS: 10.10.0.1, SERVICES: "listen:445,3389" }
+    lab-analyzer:
+      env: { IP: 10.10.0.31/24, GW: 10.10.0.1, DNS: 10.10.0.1, SERVICES: "listen:22" }
+
+    # printers and fax
+    printer:
+      env: { IP: 10.10.0.40/24, GW: 10.10.0.1, DNS: 10.10.0.1, SERVICES: "listen:631,9100" }
+
+    # guest Wi-Fi (addresses from DHCP, same subnet as everything else)
+    guest-laptop:
+      env: { IP: dhcp, SERVICES: "listen:445" }
+    guest-phone:
+      env: { IP: dhcp, SERVICES: "listen:8080" }
+
+    home-doctor:
+      env: { IP: 192.0.2.50/24, GW: 192.0.2.1, DNS: 203.0.113.10 }
+
+  links:
+    - { endpoints: ["router:eth1", "internet:eth1"], mtu: 1500 }
+    - { endpoints: ["internet:eth2", "home-doctor:eth1"], mtu: 1500 }
+    - { endpoints: ["router:eth2", "switch:eth1"], mtu: 1500 }
+    - { endpoints: ["switch:eth2", "reception-pc:eth1"], mtu: 1500 }
+    - { endpoints: ["switch:eth3", "doctor-pc:eth1"], mtu: 1500 }
+    - { endpoints: ["switch:eth4", "emr:eth1"], mtu: 1500 }
+    - { endpoints: ["switch:eth5", "pacs:eth1"], mtu: 1500 }
+    - { endpoints: ["switch:eth6", "imaging:eth1"], mtu: 1500 }
+    - { endpoints: ["switch:eth7", "lab-analyzer:eth1"], mtu: 1500 }
+    - { endpoints: ["switch:eth8", "printer:eth1"], mtu: 1500 }
+    - { endpoints: ["switch:eth9", "guest-laptop:eth1"], mtu: 1500 }
+    - { endpoints: ["switch:eth10", "guest-phone:eth1"], mtu: 1500 }

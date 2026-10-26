@@ -1,0 +1,15 @@
+#!/bin/bash
+# clinic-probe <kind> <host> [port] [timeout-seconds]
+# Tries to reach a service and exits 0 if it answered, 1 if not.
+# The test suite runs this inside the source machine, so the packet takes
+# exactly the path a real program on that machine would take.
+set -uo pipefail
+kind=$1; host=$2; port=${3:-}; t=${4:-3}
+case "$kind" in
+    tcp)   nc -z -w "$t" "$host" "$port" ;;
+    https) curl -skf -o /dev/null --connect-timeout "$t" --max-time $((t + 2)) "https://$host:${port:-443}/" ;;
+    dns)   out=$(dig +time="$t" +tries=1 +short "@$host" -p "${port:-53}" example.org 2>/dev/null) && [ -n "$out" ] ;;
+    icmp)  ping -c 1 -W "$t" "$host" >/dev/null ;;
+    *)     if command -v "clinic-probe-$kind" >/dev/null; then exec "clinic-probe-$kind" "$host" "$port" "$t"; fi
+           echo "unknown probe kind $kind" >&2; exit 2 ;;
+esac

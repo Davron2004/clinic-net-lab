@@ -1,0 +1,77 @@
+#!/bin/bash
+# Boots one simulated machine. The ROLE variable decides what it becomes.
+# Containerlab plugs in the network cables (eth1, eth2, ...) after the
+# container starts, so every role first waits for its cables.
+set -Eeuo pipefail
+
+log() { echo "[$(date +%H:%M:%S)] ${HOSTNAME}: $*"; }
+
+# If booting fails, stay up (without the ready marker) so the problem can be
+# inspected. Exiting would make Docker restart the container, and a restarted
+# container has lost the network cables containerlab plugged in.
+trap 'log "boot failed at line $LINENO"; exec sleep infinity' ERR
+
+wait_for_cables() {
+    local want=${CLAB_INTFS:-1} have=0
+    for _ in $(seq 1 600); do
+        have=$(ls /sys/class/net | grep -cE '^eth[1-9][0-9]*$' || true)
+        [ "$have" -ge "$want" ] && return 0
+        sleep 0.1
+    done
+    log "only $have of $want interfaces appeared"; return 1
+}
+
+# Static address, or a DHCP lease when IP=dhcp.
+configure_address() {
+    local dev=${IFACE:-eth1}
+    ip link set "$dev" up
+    if [ "${IP:-}" = "dhcp" ]; then
+        # udhcpc's default script installs the address, route and resolver.
+        # Like a real laptop, keep asking until the router answers: at boot
+        # the switch and router may still be coming up.
+        local try
+        for try in $(seq 1 30); do
+            udhcpc -i "$dev" -t 3 -T 1 -n -q && return 0
+            log "no DHCP lease yet (attempt $try), retrying"
+        done
+        return 1
+    else
+        ip addr add "$IP" dev "$dev"
+        [ -n "${GW:-}" ] && ip route add default via "$GW"
+        [ -n "${DNS:-}" ] && echo "nameserver $DNS" > /etc/resolv.conf
+    fi
+    return 0
+}
+
+start_services() {
+    local svc
+    for svc in ${SERVICES:-}; do
+        case "$svc" in
+            listen:*) clinic-listen ${svc#listen:} & ;;
+            emr)      clinic-emr & ;;
+            web)      clinic-web & ;;
+            *)        if command -v "clinic-svc-$svc" >/dev/null; then "clinic-svc-$svc" & else log "unknown service $svc"; false; fi ;;
+        esac
+    done
+}
+
+wait_for_cables
+log "role=${ROLE:-host} interfaces ready"
+mkdir -p /run/clinic
+
+case "${ROLE:-host}" in
+    router)   clinic-router ;;
+    switch)   clinic-switch ;;
+    internet) clinic-internet ;;
+    host)     configure_address ;;
+    *)        log "unknown ROLE=$ROLE"; false ;;
+esac
+
+start_services
+# Optional per-node hook, mounted from the repo (used by later stages).
+[ -x /etc/clinic/node/post-up.sh ] && /etc/clinic/node/post-up.sh
+
+touch /run/clinic/ready
+log "ready"
+# Keep the container alive; if a service dies the node stays up for debugging.
+exec sleep infinity

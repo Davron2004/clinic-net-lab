@@ -1,0 +1,31 @@
+#!/usr/sbin/nft -f
+# The "before" firewall: what a typical small-office router does.
+# It blocks unsolicited traffic from the internet and translates addresses
+# on the way out. Inside the clinic there is no policy at all, and it could
+# not have one: machines on the same subnet talk to each other directly
+# through the switch, so their traffic never reaches this router.
+
+flush ruleset
+
+table inet clinic {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        iif "lo" accept
+        ct state established,related accept
+        iifname "eth2" accept
+        log group 0 prefix "deny:to-router" drop
+    }
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        ct state established,related accept
+        iifname "eth2" oifname "eth1" log group 0 prefix "allow:lan-internet" accept
+        log group 0 prefix "deny:inbound" drop
+    }
+}
+
+table ip nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat;
+        oifname "eth1" ip saddr 10.10.0.0/24 masquerade
+    }
+}

@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""The EMR web app: a patient list over HTTPS. /api/integrity returns JSON."""
+import html
+import http.server
+import json
+import os
+import ssl
+import subprocess
+
+RECORDS = "/srv/emr/records"
+
+
+def load_records():
+    rows = []
+    for name in sorted(os.listdir(RECORDS)):
+        path = os.path.join(RECORDS, name)
+        try:
+            with open(path) as f:
+                rec = json.load(f)
+            rows.append((rec["mrn"], rec["name"], rec["dob"], rec["last_visit_note"], True))
+        except (ValueError, KeyError, UnicodeDecodeError, OSError):
+            rows.append(("?", name, "", "Unreadable: file was encrypted or damaged", False))
+    return rows
+
+
+def page():
+    rows = load_records()
+    bad = sum(1 for r in rows if not r[4])
+    body = "".join(
+        f"<tr class={'ok' if r[4] else 'bad'}><td>{html.escape(r[0])}</td><td>{html.escape(r[1])}</td>"
+        f"<td>{html.escape(r[2])}</td><td>{html.escape(r[3])}</td></tr>" for r in rows)
+    status = (f"<p class=bad>{bad} of {len(rows)} charts unreadable</p>" if bad
+              else f"<p class=ok>All {len(rows)} charts readable</p>")
+    return f"""<!doctype html><meta charset=utf-8><title>Clinic EMR</title>
+<style>body{{font:15px system-ui;margin:2rem;color:#1d2433}}table{{border-collapse:collapse;width:100%}}
+td,th{{padding:.5rem .75rem;border-bottom:1px solid #e3e6ec;text-align:left}}
+.ok{{color:#1b7f4b}}tr.ok{{color:inherit}}.bad{{color:#c0392b}}small{{color:#6b7385}}</style>
+<h1>Clinic EMR</h1><small>Synthetic records for a network lab. No real patient data.</small>
+{status}<table><tr><th>MRN</th><th>Name</th><th>DOB</th><th>Last visit</th></tr>{body}</table>"""
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/api/integrity":
+            data = subprocess.run(["clinic-integrity"], capture_output=True, text=True).stdout.encode()
+            ctype = "application/json"
+        else:
+            data, ctype = page().encode(), "text/html; charset=utf-8"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, fmt, *args):
+        print(f"emr-web: {self.client_address[0]} {fmt % args}", flush=True)
+
+
+subprocess.run(["clinic-selfsigned", "/run/clinic/emr", "emr.clinic.internal"], check=True)
+srv = http.server.ThreadingHTTPServer(("0.0.0.0", 443), Handler)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain("/run/clinic/emr.crt", "/run/clinic/emr.key")
+srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+srv.serve_forever()

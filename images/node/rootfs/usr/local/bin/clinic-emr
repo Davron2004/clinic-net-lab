@@ -1,0 +1,35 @@
+#!/bin/bash
+# The EMR (electronic medical record) server.
+#  - HTTPS 443: the EMR web app staff use to read charts.
+#  - SMB 445:   the records folder shared over the network. Deliberately
+#               misconfigured as guest-writable, a shortcut common in small
+#               offices. Network segmentation is what keeps ransomware off it.
+#  - Every record is synthetic. No real patient data exists in this lab.
+set -euo pipefail
+records=/srv/emr/records
+mkdir -p "$records" /var/log/samba
+clinic-emr-seed "$records"
+chmod -R 0777 /srv/emr
+# Baseline fingerprint of every record, used to prove "records untouched".
+(cd "$records" && sha256sum -- *.json > /run/clinic/records.sha256)
+
+cat > /etc/samba/smb.conf <<'CONF'
+[global]
+   workgroup = CLINIC
+   server role = standalone server
+   map to guest = Bad User
+   guest account = nobody
+   smb ports = 445
+   disable netbios = yes
+   server min protocol = SMB2
+   log file = /var/log/samba/smbd.log
+   load printers = no
+[records]
+   path = /srv/emr/records
+   guest ok = yes
+   read only = no
+   force user = root
+CONF
+smbd -D
+
+exec clinic-emr-web

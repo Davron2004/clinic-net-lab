@@ -1,0 +1,113 @@
+#!/usr/sbin/nft -f
+# Clinic firewall policy.
+#
+# Default deny: a packet crossing from one zone to another is dropped unless
+# a rule below allows it. Each allow rule names one source, one destination
+# and one service. Every allowed new connection and every drop is logged
+# (NFLOG group 0 -> ulogd -> firewall.jsonl); the prefix is the rule's name.
+#
+# The isolation tests in policy/flows.yml check this file from the outside.
+# They are written separately on purpose: if a rule here is wrong, the
+# tests catch it instead of inheriting the same mistake.
+
+flush ruleset
+
+define WAN      = "eth1"
+define STAFF    = "eth2.10"
+define SERVERS  = "eth2.20"
+define DEVICES  = "eth2.30"
+define PRINTERS = "eth2.40"
+define GUEST    = "eth2.50"
+
+define EMR           = 10.10.20.10
+define PACS          = 10.10.20.20
+define IMAGING       = 10.10.30.10
+define LAB_ANALYZER  = 10.10.30.11
+define PRINTER       = 10.10.40.10
+
+table inet clinic {
+
+    # Traffic addressed to the router itself.
+    chain input {
+        type filter hook input priority filter; policy drop;
+        iif "lo" accept
+        ct state established,related accept
+        ct state invalid drop
+
+        # Ping the gateway from inside: basic troubleshooting.
+        iifname { $STAFF, $SERVERS, $DEVICES, $PRINTERS, $GUEST } icmp type echo-request accept
+        # DNS for zones that browse by name. Devices and printers get none:
+        # DNS queries can smuggle data out, and they only need fixed IPs.
+        iifname { $STAFF, $SERVERS, $GUEST } meta l4proto { tcp, udp } th dport 53 accept
+        # DHCP leases for guest Wi-Fi.
+        iifname $GUEST udp dport 67 accept
+
+        log group 0 prefix "deny:to-router" drop
+    }
+
+    # Traffic passing through the router from one zone to another.
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        # Replies to connections we already allowed.
+        ct state established,related accept
+        ct state invalid drop
+
+        iifname vmap {
+            $STAFF    : jump from_staff,
+            $SERVERS  : jump from_servers,
+            $DEVICES  : jump from_devices,
+            $PRINTERS : jump from_printers,
+            $GUEST    : jump from_guest,
+            $WAN      : jump from_internet,
+        }
+        log group 0 prefix "deny:default" drop
+    }
+
+    chain from_staff {
+        ip daddr $EMR tcp dport 443 log group 0 prefix "allow:staff-emr-https" accept
+        ip daddr $PACS tcp dport 8042 log group 0 prefix "allow:staff-pacs-viewer" accept
+        ip daddr $PRINTER tcp dport { 631, 9100 } log group 0 prefix "allow:staff-print" accept
+        oifname $WAN tcp dport { 80, 443 } log group 0 prefix "allow:staff-web" accept
+        log group 0 prefix "deny:staff" drop
+    }
+
+    chain from_servers {
+        # Servers start no connections of their own. Replies are handled above.
+        oifname $WAN log group 0 prefix "deny:server-internet" drop
+        log group 0 prefix "deny:servers" drop
+    }
+
+    chain from_devices {
+        # Each device may do its one job and nothing else.
+        ip saddr $IMAGING ip daddr $PACS tcp dport 4242 log group 0 prefix "allow:imaging-pacs-dicom" accept
+        ip saddr $LAB_ANALYZER ip daddr $EMR tcp dport 2575 log group 0 prefix "allow:lab-emr-hl7" accept
+        # No internet for medical devices. Logged separately: it is the alert that matters.
+        oifname $WAN log group 0 prefix "deny:device-internet" drop
+        log group 0 prefix "deny:devices" drop
+    }
+
+    chain from_printers {
+        oifname $WAN log group 0 prefix "deny:printer-internet" drop
+        log group 0 prefix "deny:printers" drop
+    }
+
+    chain from_guest {
+        # Guests get the web and nothing inside the clinic.
+        oifname $WAN tcp dport { 80, 443 } log group 0 prefix "allow:guest-web" accept
+        log group 0 prefix "deny:guest" drop
+    }
+
+    chain from_internet {
+        # Nothing on the internet may open a connection into the clinic.
+        log group 0 prefix "deny:inbound" drop
+    }
+}
+
+# Outbound address translation: the clinic has one public address.
+# Only zones that are allowed out need it.
+table ip nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat;
+        oifname "eth1" ip saddr { 10.10.10.0/24, 10.10.50.0/24 } masquerade
+    }
+}
