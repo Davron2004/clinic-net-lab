@@ -26,7 +26,11 @@ table inet clinic {
         ct state established,related accept
         iifname "eth2" oifname "eth1" log group 0 prefix "allow:lan-internet" accept
         iifname "eth1" ct status dnat ip daddr 10.10.0.11 tcp dport 3389 log group 0 prefix "allow:rdp-port-forward" accept
-        log group 0 prefix "deny:inbound" drop
+        # Anything else from the internet.
+        iifname "eth1" log group 0 prefix "deny:inbound" drop
+        # Anything else at all (for example a clinic machine sending to an
+        # address that is neither on the clinic subnet nor on the internet).
+        log group 0 prefix "deny:default" drop
     }
 }
 

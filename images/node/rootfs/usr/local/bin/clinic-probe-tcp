@@ -42,7 +42,7 @@ def main(argv):
     try:
         sock.connect((addr, port))
         return 0
-    except TimeoutError:          # nothing came back in time
+    except (TimeoutError, socket.timeout):   # nothing came back in time
         return 1
     except ConnectionRefusedError:
         return 0 if mode == "reach" else 1

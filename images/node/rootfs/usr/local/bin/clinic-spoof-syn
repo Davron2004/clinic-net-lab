@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""clinic-spoof-syn <fake-source-ip> <dst-ip> <dst-port> <src-port>
+
+Sends three TCP SYN packets ("let's connect") that claim to come from
+another machine's address. The reply, if any, goes to that other machine, so
+the sender never learns whether the packets arrived: the test suite watches
+for them on the target instead (tests/isolation.py, probe "spoofed-syn").
+
+This is how an attacker on the guest Wi-Fi would try to borrow a trusted
+machine's address. The router's reverse-path check (nftables.nft, chain
+prerouting) should drop such packets on arrival.
+
+Exit 0 once the packets were sent, 2 on an error.
+"""
+import random
+import socket
+import struct
+import sys
+import time
+
+
+def checksum(data):
+    if len(data) % 2:
+        data += b"\0"
+    total = sum(struct.unpack(f"!{len(data) // 2}H", data))
+    total = (total >> 16) + (total & 0xFFFF)
+    total += total >> 16
+    return ~total & 0xFFFF
+
+
+def syn(src, dst, sport, dport):
+    s, d = socket.inet_aton(src), socket.inet_aton(dst)
+    seq = random.getrandbits(32)
+    # TCP header: ports, sequence, ack, header length 5 words, SYN flag, window.
+    tcp = struct.pack("!HHIIBBHHH", sport, dport, seq, 0, 5 << 4, 0x02, 64240, 0, 0)
+    pseudo = s + d + struct.pack("!BBH", 0, socket.IPPROTO_TCP, len(tcp))
+    tcp = tcp[:16] + struct.pack("!H", checksum(pseudo + tcp)) + tcp[18:]
+    # IP header with the fake source. The kernel fills in the IP checksum.
+    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp), random.getrandbits(16), 0,
+                     64, socket.IPPROTO_TCP, 0, s, d)
+    return ip + tcp
+
+
+def main(argv):
+    try:
+        src, dst, dport, sport = argv[1], argv[2], int(argv[3]), int(argv[4])
+        socket.inet_aton(src)
+        socket.inet_aton(dst)
+    except (IndexError, ValueError, OSError):
+        print(__doc__, file=sys.stderr)
+        return 2
+    try:
+        # A raw socket where we write the IP header ourselves (IPPROTO_RAW).
+        with socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW) as s:
+            for _ in range(3):
+                s.sendto(syn(src, dst, sport, dport), (dst, 0))
+                time.sleep(0.3)
+    except OSError as e:
+        print(f"could not send: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

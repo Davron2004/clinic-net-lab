@@ -15,7 +15,7 @@ FROM orthancteam/orthanc:26.9.1
 ENV DEBIAN_FRONTEND=noninteractive PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
 # Network tools the lab expects on every machine (address setup, probes).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        iproute2 iputils-ping netcat-openbsd curl dnsutils procps \
+        iproute2 iputils-ping netcat-openbsd curl dnsutils procps tini \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --break-system-packages "pynetdicom==2.1.1" "pydicom==2.4.4"
 
@@ -26,5 +26,6 @@ COPY --from=node /usr/local/share/clinic/ /usr/local/share/clinic/
 COPY rootfs/ /
 RUN chmod +x /usr/local/bin/*
 
-ENTRYPOINT ["/usr/local/bin/clinic-entrypoint"]
+# tini as process 1 reaps zombie processes (see images/node/Dockerfile).
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/clinic-entrypoint"]
 CMD []

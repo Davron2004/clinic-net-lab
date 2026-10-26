@@ -1,0 +1,8 @@
+#!/bin/bash
+# clinic-probe-whoami <host> [port] [timeout]: ask the public website which
+# address the request came from (https://<host>/whoami) and print it.
+# The test suite compares it with the clinic's public address, which proves
+# the router translates (NATs) outgoing traffic.
+# Exit status as clinic-probe: 0 reached (address printed), 1 blocked, 2 error.
+t=${3:-3}
+exec clinic-curl-verdict -skf --connect-timeout "$t" --max-time $((t + 2)) "https://$1:${2:-443}/whoami"

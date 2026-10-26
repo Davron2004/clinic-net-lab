@@ -33,6 +33,22 @@ define SIEM          = 10.10.90.10
 
 table inet clinic {
 
+    # Anti-spoofing, before anything else looks at a packet. Every rule below
+    # trusts the source address, so check it is plausible: a packet must
+    # arrive on the interface the router would use to reach its source
+    # ("reverse path"). A guest claiming the EMR server's address arrives on
+    # the guest VLAN, but the EMR lives on the servers VLAN: dropped. This
+    # covers every zone, the VPN and the internet side. It cannot catch a
+    # machine borrowing a neighbour's address in its own subnet; see the
+    # README's limits.
+    chain prerouting {
+        type filter hook prerouting priority filter; policy accept;
+        iif "lo" accept
+        # A guest asking for an address has none yet: DHCP comes from 0.0.0.0.
+        iifname $GUEST ip saddr 0.0.0.0 udp sport 68 udp dport 67 accept
+        meta nfproto ipv4 fib saddr . iif oif missing log group 0 prefix "deny:spoofed" drop
+    }
+
     # Traffic addressed to the router itself.
     chain input {
         type filter hook input priority filter; policy drop;

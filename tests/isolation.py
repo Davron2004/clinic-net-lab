@@ -22,6 +22,10 @@ Every flow ends with one verdict:
                (so the block proves nothing)
 Any verdict but PASS fails the run.
 
+After the named flows, a default-deny sweep tries common ports between every
+pair of zones and fails the run if anything policy does not allow gets
+through (see "default-deny sweep" below). It is skipped with --only.
+
 Writes run/results/latest.json and run/results/report.md, and streams each
 result to run/events.jsonl for the clinic map.
 """
@@ -29,6 +33,8 @@ import argparse
 import datetime
 import hashlib
 import json
+import random
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -70,6 +76,8 @@ def probe(policy, flow, dead):
     dst_ip = resolve_target(policy, flow)
     if not dst_ip:
         return error(flow, "could not resolve the target's address")
+    if kind == "spoofed-syn":
+        return spoofed_syn(policy, flow, src, dst_ip)
     cmd = f"clinic-probe {kind} {dst_ip} {flow['port']} {TIMEOUT}"
     code, out = lab.sh(src, cmd, timeout=TIMEOUT + 10)
     # A packet can be slow on its very first trip (address resolution, a cold
@@ -81,6 +89,14 @@ def probe(policy, flow, dead):
     if code not in (REACHED, BLOCKED):
         return error(flow, f"probe failed (exit {code}): {out[-200:]}", dst_ip=dst_ip)
     r = dict(flow, probe=kind, dst_ip=dst_ip, observed="allow" if code == REACHED else "deny", detail="")
+    if code == REACHED and flow.get("seen_as"):
+        # The target saw the request coming from some address (the probe
+        # prints it); policy says which one it must be.
+        seen, want = out.splitlines()[-1].strip() if out else "", lab.ip_of(policy, flow["seen_as"])
+        if seen != want:
+            r.update(observed="deny", detail=f"reached, but from {seen or 'an unknown address'} "
+                                             f"instead of {want}")
+        return r
     if r["observed"] == "deny":
         # A block only proves something if the service behind it is running.
         up, why = control(policy, flow, dst_ip)
@@ -90,6 +106,46 @@ def probe(policy, flow, dead):
             r.update(observed="error",
                      detail=f"blocked, but the target service is not running either ({why}), so the block proves nothing")
     return r
+
+
+def spoofed_syn(policy, flow, src, dst_ip):
+    """Probe "spoofed-syn": does a packet with a borrowed source address get through?
+
+    The source sends TCP SYNs claiming to be flow["spoof_as"] (clinic-spoof-syn).
+    Replies would go to the real owner of that address, so the answer comes
+    from the target instead: tcpdump there waits for one such SYN. A unique
+    source port tells our packets apart from any other traffic.
+    """
+    fake = lab.ip_of(policy, flow["spoof_as"])
+    sport = random.randint(40000, 60000)
+    target = lab.container(policy, flow["to"])
+    capture = subprocess.Popen(
+        ["docker", "exec", target, "timeout", str(TIMEOUT + 2), "tcpdump", "-n", "-l", "-p", "-i", "any", "-c", "1",
+         f"tcp[tcpflags] & tcp-syn != 0 and dst port {flow['port']} and src port {sport}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    r = dict(flow, probe="spoofed-syn", dst_ip=dst_ip, detail="")
+    # tcpdump says "listening on ..." once it is capturing: only then send.
+    started = ""
+    for line in capture.stderr:
+        started = line
+        if "listening on" in line:
+            break
+    if "listening on" not in started:
+        capture.kill()
+        return error(flow, f"could not watch the target: {started.strip()}", dst_ip=dst_ip)
+    code, out = lab.sh(src, f"clinic-spoof-syn {fake} {dst_ip} {flow['port']} {sport}", timeout=TIMEOUT + 10)
+    try:
+        seen, _ = capture.communicate(timeout=TIMEOUT + 10)
+    except subprocess.TimeoutExpired:
+        capture.kill()
+        return error(flow, "the capture on the target did not finish", dst_ip=dst_ip)
+    if code != 0:
+        return error(flow, f"could not send the spoofed packets (exit {code}): {out[-200:]}", dst_ip=dst_ip)
+    if capture.returncode == 0 and seen.strip():
+        return dict(r, observed="allow")
+    if capture.returncode == 124:     # timeout: nothing arrived
+        return dict(r, observed="deny", service_up=True)
+    return error(flow, f"the capture on the target failed (exit {capture.returncode})", dst_ip=dst_ip)
 
 
 def control(policy, flow, dst_ip):
@@ -130,7 +186,83 @@ def verdict(r):
     return "VIOLATION" if r["expect"] == "deny" else "BROKEN"
 
 
-def run(policy, flows):
+# ---------------------------------------------------------------- default-deny sweep
+# The flows above test what policy names. The sweep looks for what nobody
+# named: from one machine per zone it tries a list of common ports on one
+# machine in every other zone (and on the router), and requires that only
+# what policy allows gets through. It uses "reach" semantics (a refused
+# connection counts as reached), so a hole shows up even where nothing
+# listens today. Configured in policy/clinic.yml under sweep.
+OUTSIDE = {"internet", "remote"}   # zones outside the clinic
+SWEEP_TIMEOUT = 2
+
+
+def sweep_targets(policy, src):
+    zone = {n: spec["zone"] for n, spec in policy["nodes"].items()}
+    inside = zone[src] not in OUTSIDE
+    targets = [t for t in policy["sweep"]["targets"]
+               if zone[t] != zone[src] and (inside or zone[t] not in OUTSIDE)]
+    # The router itself: its inside address for clinic machines, its public
+    # address for the internet and the home laptop.
+    return targets + (["gateway"] if inside else ["clinic-wan"])
+
+
+def expected_open(policy):
+    """(from, to, proto, port) combinations policy allows."""
+    allowed = {(f["from"], f["to"], "udp" if f.get("probe") == "dns" else "tcp", f["port"])
+               for f in policy["flows"] if f["expect"] == "allow"}
+    allowed |= {(a["from"], a["to"], a["proto"], a["port"]) for a in policy["sweep"]["also_allowed"]}
+    return allowed
+
+
+def sweep_one(policy, src, dead):
+    """Run the sweep from one machine. Returns a list of result dicts."""
+    cfg = policy["sweep"]
+    container = lab.container(policy, src)
+    plan = []
+    for t in sweep_targets(policy, src):
+        ip = lab.gateway_of(container) if t == "gateway" else lab.ip_of(policy, t)
+        plan += [(t, proto, port, ip) for proto in ("tcp", "udp") for port in cfg[proto]]
+    if src in dead:
+        return [dict(zip(("to", "proto", "port"), p[:3]), **{"from": src, "result": "error",
+                     "detail": f"source machine is not up: {dead[src]}"}) for p in plan]
+    specs = " ".join(f"{proto}:{ip}:{port}" for _, proto, port, ip in plan if ip)
+    code, out = lab.sh(container, f"clinic-sweep {SWEEP_TIMEOUT} {specs}", timeout=60)
+    seen = {}
+    if code == 0:
+        for line in out.splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            seen[row["target"]] = row["result"]
+    results = []
+    for t, proto, port, ip in plan:
+        result = seen.get(f"{proto}:{ip}:{port}", "error")
+        detail = "" if result != "error" else (
+            "could not resolve the target's address" if not ip else f"sweep failed (exit {code}): {out[-120:]}")
+        results.append({"from": src, "to": t, "proto": proto, "port": port, "result": result, "detail": detail})
+    return results
+
+
+def sweep(policy, pool, dead):
+    allowed = expected_open(policy)
+    rows = [r for batch in pool.map(lambda s: sweep_one(policy, s, dead), policy["sweep"]["sources"])
+            for r in batch]
+    for r in rows:
+        r["allowed"] = (r["from"], r["to"], r["proto"], r["port"]) in allowed
+
+    def name(r):
+        return f"{r['from']} -> {r['to']}:{r['port']}/{r['proto']}"
+    return {
+        "probes": len(rows),
+        "holes": [name(r) for r in rows if r["result"] == "reached" and not r["allowed"]],
+        "open_as_allowed": [name(r) for r in rows if r["result"] == "reached" and r["allowed"]],
+        "errors": [f"{name(r)}: {r['detail']}" for r in rows if r["result"] == "error"],
+    }
+
+
+def run(policy, flows, with_sweep=True):
     net = lab.variant()
     started = datetime.datetime.now(datetime.timezone.utc)
     lab.emit({"type": "test-start", "variant": net, "total": len(flows)})
@@ -147,6 +279,8 @@ def run(policy, flows):
             lab.emit({"type": "probe", "source": "test", **{k: r.get(k) for k in (
                 "id", "from", "to", "port", "probe", "dst_ip", "expect", "observed", "pass", "what")}})
 
+        swept = sweep(policy, pool, dead) if with_sweep else None
+
     def ids(v):
         return [r["id"] for r in results if r["verdict"] == v]
 
@@ -160,13 +294,16 @@ def run(policy, flows):
         "broken": ids("BROKEN"),
         "errors": ids("ERROR"),
     }
+    if swept:
+        summary["sweep"] = {"probes": swept["probes"], "holes": swept["holes"], "errors": len(swept["errors"])}
     lab.emit({"type": "test-end", **summary})
     out_dir = lab.RUN / "results"
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "latest.json").write_text(json.dumps({"summary": summary, "results": results}, indent=2))
-    (out_dir / "report.md").write_text(render_markdown(policy, summary, results))
-    print_terminal(summary, results)
-    return summary
+    (out_dir / "latest.json").write_text(json.dumps({"summary": summary, "results": results, "sweep": swept},
+                                                    indent=2))
+    (out_dir / "report.md").write_text(render_markdown(policy, summary, results, swept))
+    print_terminal(summary, results, swept)
+    return summary, swept
 
 
 # ---------------------------------------------------------------- reporting
@@ -178,7 +315,7 @@ def label(policy, node):
 ORDER = {"ERROR": 0, "VIOLATION": 1, "BROKEN": 2, "PASS": 3}
 
 
-def render_markdown(policy, s, results):
+def render_markdown(policy, s, results, swept):
     title = "segmented clinic" if s["variant"] == "clinic" else "flat network (before)"
     lines = [
         f"# Network isolation report: {title}",
@@ -208,10 +345,20 @@ def render_markdown(policy, s, results):
             f"{r['expect']} | {observed} |")
     lines += ["", "Every blocked flow was confirmed to have a live service behind it (asked from the "
               "target itself), unless policy marks the flow as having no service by design."]
+    if swept:
+        lines += ["", "## Default-deny sweep", "",
+                  f"From one machine per zone, {swept['probes']} common ports were tried on one machine in "
+                  "every other zone and on the router. A refused connection counts as getting through, so "
+                  "a hole shows up even where nothing listens.", "",
+                  f"- Got through, as policy allows: {len(swept['open_as_allowed'])}",
+                  f"- Got through, not allowed by policy (holes): {len(swept['holes'])}",
+                  f"- Errors: {len(swept['errors'])}"]
+        lines += [""] + [f"- HOLE: {h}" for h in swept["holes"]] if swept["holes"] else []
+        lines += [""] + [f"- ERROR: {e}" for e in swept["errors"]] if swept["errors"] else []
     return "\n".join(lines) + "\n"
 
 
-def print_terminal(s, results):
+def print_terminal(s, results, swept):
     tty = sys.stdout.isatty()
     color = {"PASS": "32", "VIOLATION": "31", "BROKEN": "33", "ERROR": "35"}
 
@@ -225,6 +372,15 @@ def print_terminal(s, results):
         print(f"  {c(color[v], v.ljust(9))} {r['id']}  {flow.ljust(34)} {r['what']}")
         if v == "ERROR":
             print(f"            {r['detail']}")
+    if swept:
+        print()
+        for h in swept["holes"]:
+            print(f"  {c('31', 'HOLE     ')} {h}")
+        for e in swept["errors"]:
+            print(f"  {c('35', 'ERROR    ')} {e}")
+        ok = not swept["holes"] and not swept["errors"]
+        print(c("32" if ok else "31", f"  Default-deny sweep: {swept['probes']} ports tried, "
+                                      f"{len(swept['holes'])} holes, {len(swept['errors'])} errors"))
     print()
     head = f"{s['passed']}/{s['total']} flows match policy"
     tail = f"{len(s['violations'])} violations, {len(s['broken'])} broken, {len(s['errors'])} errors"
@@ -268,12 +424,17 @@ def main():
 
     try:
         with lab.quiet_traffic():
-            s = run(policy, flows)
+            # The sweep is about the whole network, so it runs with the full matrix only.
+            s, swept = run(policy, flows, with_sweep=not args.only)
     except RuntimeError as e:
         sys.exit(f"error: {e}")
+    sweep_errors = bool(swept and swept["errors"])
     if args.expect_violations:
-        sys.exit(0 if expected_findings_match(policy, s) else 1)
-    sys.exit(0 if s["passed"] == s["total"] else 1)
+        # On the flat network the sweep's holes are expected (there is no
+        # firewall inside); they are reported, not judged.
+        sys.exit(0 if expected_findings_match(policy, s) and not sweep_errors else 1)
+    sweep_clean = not swept or not (swept["holes"] or sweep_errors)
+    sys.exit(0 if s["passed"] == s["total"] and sweep_clean else 1)
 
 
 if __name__ == "__main__":

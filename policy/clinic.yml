@@ -52,6 +52,9 @@ nodes:
 #   pacs-web      the image archive's web viewer / API answers (login prompt)
 #   https-direct  HTTPS out of the machine's own cable, never through a VPN
 #   https-vpn     HTTPS forced into the machine's VPN tunnel
+#   whoami        HTTPS to the public website, which reports the address it saw
+#   spoofed-syn   TCP SYNs that claim another machine's address (spoof_as);
+#                 the target watches for them, since replies go elsewhere
 #
 # For every blocked flow the suite also asks the target itself whether the
 # service is running; if it is not, the block proves nothing and the flow is
@@ -69,6 +72,11 @@ flows:
   - { id: A08, from: guest-laptop, to: internet, port: 443,  probe: https, expect: allow, what: "Guests browse the web" }
   - { id: A09, from: guest-laptop, to: gateway,  port: 53,   probe: dns,   expect: allow, what: "Guests look up web addresses (DNS)" }
   - { id: A10, from: doctor-pc,    to: gateway,  port: 53,   probe: dns,   expect: allow, what: "Staff look up web addresses (DNS)" }
+  # The website reports the address it sees (probe whoami); seen_as says
+  # which it must be. Without address translation (NAT) it would see the
+  # PC's private address, and replies could not find their way back on the
+  # real internet.
+  - { id: A11, from: reception-pc, to: internet, port: 443,  probe: whoami, seen_as: clinic-wan, expect: allow, what: "Staff web traffic leaves from the clinic's one public address (NAT)" }
 
   # ---- forbidden: guest Wi-Fi is the outside world ----
   - { id: D01, from: guest-laptop, to: emr,          port: 443,  probe: https, expect: deny, what: "Guest reaches the EMR web app" }
@@ -126,6 +134,12 @@ flows:
   - { id: D32, from: pacs,         to: emr,          port: 22,                 expect: deny, what: "Compromised image archive opens an admin shell on the EMR server" }
   - { id: D33, from: emr,          to: pacs,         port: 8042, probe: pacs-web, expect: deny, what: "Compromised EMR server reaches the archive's admin API" }
 
+  # ---- forbidden: borrowing another machine's address ----
+  # The router checks each packet's source address against where it came
+  # from (nftables.nft, chain prerouting). Without that check, a guest could
+  # send packets as the EMR server and the guest-web rule would let them out.
+  - { id: D35, from: guest-laptop, to: internet,     port: 443,  probe: spoofed-syn, spoof_as: emr, expect: deny, what: "Guest sends packets pretending to be the EMR server" }
+
   # ---- forbidden: servers have no use for DNS ----
   - { id: D34, from: emr,          to: gateway,      port: 53,   probe: dns,   expect: deny, what: "EMR server uses DNS (a covert way out)" }
 
@@ -165,7 +179,25 @@ flat_known:
   # hold), except the remote desktop port forward (R07).
   violations: [D01, D02, D03, D04, D05, D06, D07, D08, D09, D10, D11, D12, D13, D14, D15,
                D16, D17, D18, D19, D23, D24, D25, D26, D27, D28, D29, D30, D31, D32, D33,
-               D34, R07, S04, S05, S06, S07, S08]
+               D34, D35, R07, S04, S05, S06, S07, S08]
   # Needed flows that do not work: there is no VPN, so the doctor at home
   # cannot open the EMR (they use the remote desktop port forward instead).
   broken: [R01]
+
+# The default-deny sweep (tests/isolation.py): from each source it tries
+# every port below on one target in every other zone, and on the router.
+# Anything that gets through must be an allowed flow above, or listed in
+# also_allowed (things the firewall allows a whole zone, beyond the one
+# machine a flow above happens to name).
+sweep:
+  sources: [reception-pc, emr, imaging, printer, guest-laptop, siem, internet, home-doctor]
+  targets: [reception-pc, emr, imaging, printer, guest-phone, siem, internet]
+  tcp: [22, 23, 25, 53, 80, 135, 139, 443, 445, 631, 1514, 1515, 2575, 3306, 3389, 4242, 5900, 8042, 8080, 9100]
+  udp: [53, 123, 161, 5353]
+  also_allowed:
+    - { from: reception-pc, to: printer,  proto: tcp, port: 631 }   # printing over IPP (staff-print)
+    - { from: reception-pc, to: internet, proto: tcp, port: 80 }    # plain-HTTP web (staff-web)
+    - { from: reception-pc, to: gateway,  proto: udp, port: 53 }    # DNS (A10 is the doctor's PC)
+    - { from: reception-pc, to: gateway,  proto: tcp, port: 53 }    # DNS over TCP, for large answers
+    - { from: guest-laptop, to: internet, proto: tcp, port: 80 }    # plain-HTTP web (guest-web)
+    - { from: guest-laptop, to: gateway,  proto: tcp, port: 53 }    # DNS over TCP
