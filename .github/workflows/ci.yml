@@ -26,7 +26,7 @@ jobs:
         run: |
           files=$(grep -rlE '^#!/usr/bin/env python3' images || true)
           docker run --rm -v "$PWD:/src" -w /src ghcr.io/astral-sh/ruff:0.14.0 \
-            check --line-length 120 labkit tests scenarios map $files
+            check --line-length 120 labkit tests scenarios map images/siem/wazuh/integrations $files
 
   lab:
     runs-on: ubuntu-24.04
