@@ -56,10 +56,11 @@ Details that matter:
 
 - **Source health check.** Before any probe, every source machine must have finished booting
   and be able to ping its own gateway. Otherwise all its flows are ERRORs ("source machine is
-  not up"). Without it, a machine with a cut cable would "block" every forbidden flow it starts. (A machine
-  with no default route, like the simulated internet, is only checked for having booted. So a
-  source whose route has vanished, for example after `ip link set eth1 down` and back up on
-  the printer, passes the check while it cannot send. This is a known gap.)
+  not up"). Without it, a machine with a cut cable would "block" every forbidden flow it starts.
+  A machine configured with a gateway must also still have its default route: after
+  `ip link set eth1 down` and back up on the printer the route is gone, and D14/D15 come back
+  ERROR ("has lost its default route"). Only the simulated internet has no default route by
+  design; it is checked for having booted.
 - **Retry asymmetry.** An allowed flow that comes back blocked is retried once (a first packet
   can be slow). A forbidden flow is never retried, because getting through even once is a
   finding. Errors are not retried either: they need a human, not luck.
