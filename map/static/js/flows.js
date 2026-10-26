@@ -58,6 +58,7 @@ export class Flows {
         same.count = (same.count || 1) + 1;
         same.ports?.add(flow.port);
         if (same.tag) same.tag.textContent = `×${same.count}`;
+        else if (same.g) this.addTag(same);
         return;
       }
     }

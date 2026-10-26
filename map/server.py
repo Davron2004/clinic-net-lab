@@ -789,13 +789,14 @@ def main():
     ap.add_argument("--host", default="0.0.0.0")
     args = ap.parse_args()
 
-    engine = Engine(lab.RUN)
-    engine.load()
-    threading.Thread(target=engine.pump, daemon=True).start()
-
-    Handler.engine = engine
+    # Listen first: a browser opened the moment ./lab up prints the address
+    # waits in the queue while the lab's state is read, instead of being refused.
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
+    engine = Engine(lab.RUN)
+    engine.load()
+    Handler.engine = engine
+    threading.Thread(target=engine.pump, daemon=True).start()
     public = os.environ.get("MAP_PORT", args.port)
     log(f"clinic map for lab '{lab.LAB}' on http://localhost:{public}")
     try:
