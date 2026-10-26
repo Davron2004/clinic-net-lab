@@ -115,8 +115,10 @@ up() {
     # Fresh run directory: logs, events and results belong to one deployment.
     # Empty it rather than delete it: Docker Desktop's file sharing can keep
     # pointing at a deleted directory, which containers then fail to write to.
+    # The cleanup runs in a container because on Linux the files belong to
+    # root (the lab machines wrote them).
     mkdir -p "$RUN/logs" "$RUN/results"
-    find "$RUN" -mindepth 1 -type f -delete
+    docker run --rm -v "$RUN:/run-dir" "$TOOLBOX_IMAGE" find /run-dir -mindepth 1 -type f -delete
     echo "$variant" > "$RUN/variant"
     say "Starting the $variant network"
     clab deploy -t "$variant.clab.yml" --name "$LAB" >/dev/null
