@@ -196,8 +196,7 @@ curl returns `200` again.
 - `udhcpc`: `broadcasting discover` three times, then `no lease, failing`. The phone ends
   with no address (`ip -br -4 addr` shows only `lo`).
 
-Restarting dnsmasq restores both. (You will see `[dnsmasq] <defunct>` in `pgrep -a dnsmasq`:
-a dead process the container's PID 1, `sleep infinity`, does not reap. Cosmetic.)
+Restarting dnsmasq restores both.
 Real-world lesson: DNS and DHCP on one box are a single point of failure for "the network
 is down" complaints.
 
@@ -216,22 +215,26 @@ client's MAC. The lease (`udhcpc: lease of 10.10.0.102 obtained from 10.10.0.1, 
 time 3600`) includes router and DNS server, which is why the guest ends up with
 `default via 10.10.0.1` and `nameserver 10.10.0.1`.
 
-**Exercise 1.6.** Verified on the flat network. Most of the forbidden flows are VIOLATIONs
-(guest and device flows D01 to D19, D23 to D28, the port forward R07, and the SIEM flows
-S04 to S06 and S08 in the run I did; read the exact list in `run/results/report.md`). Only the
-allowed flows that depend on the segmentation are different: R01 is BROKEN, because the flat
-network has no VPN.
+**Exercise 1.6.** Verified on the flat network: `22/61 flows match policy (38 violations,
+1 broken, 0 errors)`. Almost every forbidden flow is a VIOLATION (D01 to D19, D23 to D35, the
+port forward R07, and the SIEM flows S04 to S08). Only the internet-side flows D20 to D22 and
+the VPN-only R02 to R06 hold. The allowed flow that depends on the segmentation is the only
+BROKEN one: R01, because the flat network has no VPN. The exact lists are `flat_known` in
+`policy/clinic.yml`.
 
 ```
 BROKEN    R01  home-doctor -> emr:443            (no VPN in the flat network)
 VIOLATION R07  internet -> clinic-wan:3389       (the port forward)
+Default-deny sweep: 1344 ports tried, 985 holes, 0 errors
 ```
 
-`--expect-violations` exits 0 here (it passes when at least one violation is caught): this is
-the CI check that proves the test suite can actually fail. The ransomware scenario:
+`--expect-violations` exits 0 here only because the violations and broken flows are
+*exactly* the `flat_known` list, with no errors: this is the CI check that proves the test
+suite can actually fail. The ransomware scenario exits 1 (breached):
 
 ```
 Blocked 0 of 13 paths. Patient records: 0 of 12 intact, 12 encrypted.
+Result: BREACHED
 ```
 
 Patient zero is the imaging workstation. It reaches the records share (`emr:445`), the

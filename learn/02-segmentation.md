@@ -40,8 +40,8 @@ Use the segmented clinic for this stage: `./lab up`, then `./lab traffic off`.
         VLAN 10 ────┘  │  │  │  │ └──── VLAN 90 (SIEM)
         reception-pc,  │  │  │  └─ VLAN 50 guests  (isolated ports)
         doctor-pc      │  │  └──── VLAN 40 printer
-                       │  └─────── VLAN 30 imaging, lab analyzer (isolated ports)
-                       └────────── VLAN 20 EMR, PACS
+        (isolated)     │  └─────── VLAN 30 imaging, lab analyzer (isolated ports)
+                       └────────── VLAN 20 EMR, PACS (isolated ports)
 ```
 
 The switch (`images/node/rootfs/usr/local/bin/clinic-switch`) is a Linux bridge created with
@@ -51,12 +51,16 @@ The switch (`images/node/rootfs/usr/local/bin/clinic-switch`) is a Linux bridge 
   get tagged 10 on entry and untagged on exit.
 - `trunk 10,20,30,40,50,90` becomes one `bridge vlan add` per VLAN, tagged. This is
   `eth1`, the cable to the router.
-<!-- REVERIFY (main fix 2): the list of isolated ports changes. -->
-- `isolated` becomes `bridge link set dev ethN isolated on`.
+- `isolated` becomes `bridge link set dev ethN isolated on`. Every port in the clinic has it
+  except the trunk to the router, the printer and the SIEM (each alone in its VLAN, so there
+  is no neighbour to protect from). Staff PCs, servers, devices and guests all cannot reach
+  each other directly, even inside one VLAN. Nothing in the clinic needs a path inside a zone.
+  Two layers, two jobs: the router and its firewall keep zones apart, the switch keeps the
+  machines of one zone apart. Policy flows D06, D23 and D29 to D33 test the switch layer.
 
 The router (`config/clinic/router/interfaces.sh`) creates `eth2.10` ... `eth2.90` on top of
-`eth2` and gives each the gateway address `10.10.N0.1`. `ip_forward=1` is set in
-`clinic-router`. When `doctor-pc` (10.10.10.12) talks to `emr` (10.10.20.10):
+`eth2` and gives each the gateway address `10.10.N0.1`. `clinic-router` loads the
+firewall first and sets `ip_forward=1` last, so the router never forwards unfiltered. When `doctor-pc` (10.10.10.12) talks to `emr` (10.10.20.10):
 
 1. The destination is in a different subnet, so doctor-pc sends the frame to its gateway
    MAC (the router, `10.10.10.1`).
@@ -67,7 +71,8 @@ The router (`config/clinic/router/interfaces.sh`) creates `eth2.10` ... `eth2.90
    removed, to the EMR's access port.
 
 Notice: **the firewall decides the zone by which interface the packet arrived on**, not by
-the source IP address in the packet. The VLAN is the identity.
+the source IP address in the packet. The VLAN is the identity. (The router also checks the
+two agree; see stage 03, "Anti-spoofing".)
 
 ## 3. Where it lives in the lab
 
@@ -106,20 +111,25 @@ Open two shells on `switch`: one with
 packets show up on the trunk (eth1), what VLAN tags, and what do the MAC addresses do?
 What does the EMR's port eth4 show? Nothing is changed.
 
-<!-- REVERIFY (main fix 2: staff-PC and server ports become isolated): this section only lists guest and device ports as isolated; the port list in section 2 and the diagram need updating. -->
 **Exercise 2.2. Take isolation away.**
-First `./lab test --only D06,D23` (both pass). Then on `switch`:
+First `./lab test --only D06,D23,D29,D31` (all pass: guests, devices, staff PCs, servers).
+Then on `switch` turn isolation off on every port in those pairs:
 
 ```bash
-bridge link set dev eth9 isolated off     # guest-laptop
-bridge link set dev eth10 isolated off    # guest-phone
-bridge link set dev eth6 isolated off     # imaging
-bridge link set dev eth7 isolated off     # lab-analyzer
+for p in 2 3 4 5 6 7 9 10; do bridge link set dev eth$p isolated off; done
+# eth2 reception-pc, eth3 doctor-pc, eth4 emr, eth5 pacs, eth6 imaging,
+# eth7 lab-analyzer, eth9 guest-laptop, eth10 guest-phone
 ```
 
-Run `./lab test --only D06,D23` again. Then switch isolation back on for `eth10`, `eth6`
-and `eth7` but leave `eth9` off, and run once more. Predict both results.
-Undo: `bridge link set dev eth9 isolated on` (and the other three).
+Run `./lab test --only D06,D23,D29,D31` again. Then switch isolation back on for every
+port except `eth9` and `eth2`:
+
+```bash
+for p in 3 4 5 6 7 10; do bridge link set dev eth$p isolated on; done
+```
+
+and run once more. Predict both results.
+Undo: `bridge link set dev eth9 isolated on` and the same for `eth2`.
 
 **Exercise 2.3. Plug the EMR into the wrong VLAN.**
 On `switch`: `bridge vlan del dev eth4 vid 20; bridge vlan add dev eth4 vid 10 pvid untagged`.
@@ -133,14 +143,15 @@ and `ip neigh flush all` on the EMR.
 **Exercise 2.4. Forget a VLAN on the trunk.**
 On `switch`: `bridge vlan del dev eth1 vid 50`. Run `./lab test --only A01,A08,A09,D06`,
 then in `guest-laptop` `ip neigh flush all; ping -c1 -W2 10.10.50.1; ip neigh`.
-Predict which flows break and what `ip neigh` shows.
+Predict the verdict of each flow (PASS, VIOLATION, BROKEN or ERROR) and what `ip neigh` shows.
 Undo: `bridge vlan add dev eth1 vid 50`.
 
-<!-- REVERIFY (main fix 2): reception-pc and doctor-pc ports will be isolated, so doctor-pc will probably no longer see the broadcast ping. Re-run and rewrite prediction/answer (choose two non-isolated machines or explain the new result). -->
 **Exercise 2.5. How far does a broadcast go?**
-Run `tcpdump -ni eth1 icmp` on `doctor-pc` (same VLAN as reception-pc), on `emr` and on
-`printer`. In `reception-pc` run `ping -b -c 2 -W 1 10.10.10.255`. Predict which of the three
-machines sees the packet. Nothing is changed.
+Run `tcpdump -ni eth1 icmp` on `doctor-pc` (same VLAN as reception-pc), on `emr`, on
+`printer` and on `router` (use `-i eth2.10` there). In `reception-pc` run
+`ping -b -c 2 -W 1 10.10.10.255`. Predict which of the four machines sees the packet. Then on
+`switch` run `bridge link set dev eth3 isolated off`, repeat, and predict again.
+Undo: `bridge link set dev eth3 isolated on`.
 
 ## 5. Questions you should be able to answer
 
@@ -174,12 +185,16 @@ the frame to the next hop. A first ping from doctor-pc to the EMR (try `ping` in
 **Exercise 2.2.** Verified.
 
 ```
-all four off:
+all eight off:
   VIOLATION D06  guest-laptop -> guest-phone:8080
   VIOLATION D23  imaging -> lab-analyzer:22
-only eth9 (guest-laptop) off, eth10 back on:
+  VIOLATION D29  reception-pc -> doctor-pc:445
+  VIOLATION D31  pacs -> emr:445
+only eth9 (guest-laptop) and eth2 (reception-pc) off:
   VIOLATION D06   (still!)
   PASS      D23
+  VIOLATION D29   (still!)
+  PASS      D31
 ```
 
 Without isolation the two machines are in the same VLAN, so frames go straight between
@@ -189,7 +204,9 @@ firewall cannot help here. Isolation is the only control between machines in one
 The second result is the surprise: the Linux bridge only blocks traffic between two
 isolated ports. `eth10` was isolated, `eth9` was not, and traffic between them is allowed
 in both directions. One un-isolated port opens the whole group. In a real clinic, check
-every port in the group.
+every port in the group. (Staff PCs and servers were not isolated in an earlier version of
+this lab. An infected PC could then reach the next one, and a compromised server the EMR,
+without ever meeting the firewall. D29 to D33 were added to keep that from coming back.)
 
 **Exercise 2.3.** Verified. The EMR does get an ARP answer for `10.10.20.1`:
 
@@ -200,31 +217,42 @@ every port in the group.
 The router owns `10.10.20.1` on another interface (`eth2.20`), and Linux answers ARP for
 any of its addresses on any interface. So the EMR thinks the gateway is reachable, sends
 its packets, and they arrive at the router tagged VLAN 10. The ping still fails (100% packet
-loss): the reply goes out of `eth2.20`, where the EMR no longer is. `./lab test` shows
-the same six flows as the cut cable in stage 00:
+loss): the reply goes out of `eth2.20`, where the EMR no longer is. The test suite notices
+this before it runs a single flow. It health-checks every source machine first (it must have
+booted and be able to ping its own gateway), and the EMR fails that. `./lab test` reports:
 
 ```
-BROKEN A01, A02, A06, R01, S01, S02     (0 violations, 6 broken)
+BROKEN A01, A02, A06, R01          (needed flows into the EMR)
+ERROR  D16, D33, D34, S01, S02     (flows that start on the EMR: "source machine is not up:
+                                    cannot ping its gateway 10.10.20.1")
+sweep: 168 ERRORs                  (every port tried from the EMR)
+52/61 flows match policy  (0 violations, 4 broken, 5 errors)
 ```
 
-The firewall log shows how the router sees it:
+ERROR means "the test could not tell". It fails the run like a violation does (stage 04).
+Without the health check, the forbidden flows from the EMR (D16, D33, D34) would have passed
+because a machine that cannot send anything is trivially "blocked".
+
+The firewall log shows how the router sees the EMR's packets:
 
 ```
-deny:staff   eth2.10 -> eth2.90   10.10.20.10 -> 10.10.90.10:1514
+deny:spoofed   eth2.10 ->   10.10.20.10 -> 10.10.90.10:1514
 ```
 
-The packets claim to come from the EMR (10.10.20.10), but they entered on `eth2.10`, so the
-firewall judges them as **staff-zone** traffic, and the EMR's rule `allow:emr-siem` never
-matches. The zone is the interface, not the source address. Lessons: a mis-patched port
-is a silent failure, and the source IP is not the identity.
+The packets claim to come from the EMR (10.10.20.10), but they entered on `eth2.10`. The
+router's reverse-path check (stage 03) knows 10.10.20.10 lives behind `eth2.20`, so it drops
+them as `deny:spoofed` before any zone chain sees them. Without that check they would be
+judged as **staff-zone** traffic (`deny:staff`) and the EMR's rule `allow:emr-siem` would
+never match. Either way the zone comes from the interface, not from the source address, and
+a mis-patched port is a silent failure.
 
 **Exercise 2.4.** Verified.
 
 ```
 PASS   A01  reception-pc -> emr:443
-BROKEN A08  guest-laptop -> internet:443
-BROKEN A09  guest-laptop -> gateway:53
-PASS   D06  guest-laptop -> guest-phone:8080
+ERROR  A08  guest-laptop -> internet:443      source machine is not up: cannot ping its gateway 10.10.50.1
+ERROR  A09  guest-laptop -> gateway:53        (same)
+ERROR  D06  guest-laptop -> guest-phone:8080  (same)
 ```
 
 The guest's frames are tagged VLAN 50 by the access port, but the trunk no longer carries
@@ -233,16 +261,26 @@ VLAN 50, so the switch has nowhere to send them. `ip neigh` shows
 keep their address and their isolation, but lose the router. Compare with 2.3: here nothing
 leaks, the zone just goes dark.
 
-**Exercise 2.5.** Verified. Only `doctor-pc` sees the request:
+Note D06. "The laptop cannot reach the phone" is true here for the wrong reason: the laptop
+cannot reach anything. Earlier versions of the suite called that a PASS. The source health
+check turns it into an ERROR.
+
+**Exercise 2.5.** Verified. With the ports as shipped, only the router sees the request:
 
 ```
-doctor-pc:  IP 10.10.10.11 > 10.10.10.255: ICMP echo request   (2 packets)
-emr:        0 packets captured
-printer:    0 packets captured
+router (eth2.10):  IP 10.10.10.11 > 10.10.10.255: ICMP echo request   (2 packets)
+doctor-pc:         0 packets captured
+emr:               0 packets captured
+printer:           0 packets captured
 ```
 
-A broadcast reaches every port in the VLAN and nothing outside it. That is what "broadcast
-domain" means. On the flat network (stage 01) the same ping would reach every machine.
+Both staff PCs are on isolated ports. An isolated port receives frames from the trunk (the
+router) but not from another isolated port, broadcasts included. After
+`bridge link set dev eth3 isolated off`, `doctor-pc` hears it too (2 packets): an isolated
+sender still reaches a non-isolated neighbour. `emr` and `printer` hear nothing in both
+runs. A broadcast reaches the ports of its own VLAN and nothing outside it. That is what
+"broadcast domain" means, and isolation shrinks it further. On the flat network (stage 01)
+the same ping would reach every machine.
 (Doctor-pc does not reply: Linux ignores broadcast pings by default. The point is who hears it.)
 
 </details>

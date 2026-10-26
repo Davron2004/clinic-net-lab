@@ -40,8 +40,8 @@ All three are plain files in `run/` (git-ignored, emptied by every `./lab up`).
 | `type` | When | Main fields |
 |---|---|---|
 | `probe` | One attempt at a flow | `source` (`test`, `attack`, `traffic`), `from`, `to`, `port`, `probe`, `dst_ip`, `expect`, `observed`, `pass`, `what`, `id` (tests only) |
-| `test-start`, `test-end` | A test run | `variant`, `total`; at the end `started`, `ruleset`, `passed`, `violations`, `broken` |
-| `scenario-start`, `scenario-end` | The attack | `name`, `node`, `variant`; at the end `blocked`, `attempts`, `breaches`, `encrypted`, `records` |
+| `test-start`, `test-end` | A test run | `variant`, `total`; at the end `started`, `ruleset`, `passed`, `violations`, `broken`, `errors`, and `sweep` (probes, holes, errors) after a full run |
+| `scenario-start`, `scenario-end` | The attack | `name`, `node`, `variant`; at the end `blocked`, `attempts`, `breaches`, `encrypted`, `errors`, `records` |
 | `integrity` | Before and after the attack | `node`, `phase`, `total`, `intact`, `changed`, `missing`, `added` |
 | `encrypt` | One file encrypted | `node`, `file`, `count` |
 
@@ -85,7 +85,9 @@ or `./lab attack --fast` (tests, CI).
    each file, encrypt with a throwaway key, upload `.locked`, delete the original, leave a ransom
    note) and emits an `encrypt` event per file.
 5. It fingerprints the records again (`integrity` phase `after`) and emits `scenario-end`.
-   The exit code is 0 only if nothing got through and nothing was encrypted.
+   The exit code is 0 (contained) only if nothing got through, nothing was encrypted, every
+   attempt got a real answer and the one allowed path still worked. 1 means breached, 2 means
+   the scenario could not tell (an error). The outcome is also written to `run/results/attack.json`.
 
 | | Segmented clinic | Flat network |
 |---|---|---|
@@ -93,7 +95,7 @@ or `./lab attack --fast` (tests, CI).
 | Records encrypted | 0, 12 of 12 intact | 12 of 12 |
 | Firewall log | `deny:devices` (many), `deny:device-internet`, `allow:imaging-pacs-dicom` | nothing (the router is never involved) |
 | Alerts | network: 100110, 100120 | integrity: 100202, 100201, 100210; no network alerts |
-| Exit code | 0 | 1 |
+| Exit code | 0 (contained) | 1 (breached) |
 
 ## 4. Break it
 
@@ -131,7 +133,7 @@ Undo: `./lab up`.
 test-start   {"variant":"clinic","total":2}
 probe        source test, id A01, reception-pc -> emr:443, expect allow, observed allow, pass true
 probe        source test, id D01, guest-laptop -> emr:443, expect deny, observed deny, pass true
-test-end     {"ruleset":"<12 hex chars>","passed":2,"violations":[],"broken":[]}
+test-end     {"ruleset":"<12 hex chars>","passed":2,"violations":[],"broken":[],"errors":[]}
 ```
 
 The probes arrive as they finish, not in the order of the policy file (the suite runs
@@ -157,12 +159,13 @@ the order of the list, because the attempts run in threads.
 **Exercise 8.3.** Verified.
 
 ```
-traffic on, 25 s:      4 events: probe / source traffic
-./lab test:            one probe event per flow (source test) + test-start + test-end, none from traffic
+traffic on, 25 s:      about 5 events, all probe / source traffic (one every 2.5 to 7 s)
+./lab test:            61 probe events (source test) + test-start + test-end, none from traffic
 ```
 
-The generator watches `run/events.jsonl` for `test-start` / `scenario-start` and sleeps until the
-matching end. That keeps test results clean and keeps the map's replay of them honest. The
+The test and the attack drop a flag file in `run/` and wait until the generator confirms it has
+paused and finished anything in flight (`lab.quiet_traffic`). The generator starts nothing while a
+flag exists. That keeps test results clean and keeps the map's replay of them honest. The
 cost: while a test runs, the map shows no "normal day" traffic.
 
 **Exercise 8.4.** On the flat network `scenario-end` reads

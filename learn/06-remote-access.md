@@ -263,7 +263,8 @@ router wg0 capture:  only the packet with source 10.10.60.2 appears
 `allowed-ips 10.10.60.2/32` on the router means WireGuard accepts, from this key, only packets
 whose source address is `10.10.60.2`. The packet from `.3` is dropped inside WireGuard, before
 the firewall. So a person with the laptop cannot invent other tunnel addresses, and the firewall
-can trust that source address in `from_remote`. Compare with the guest zone in stage 03, exercise
-3.6, where the source address is not checked.
+can trust that source address in `from_remote`. Compare with the other zones in stage 03: there the
+router checks the source address itself (reverse-path check, exercises 3.6 and 3.7), but cannot
+tell two machines of one subnet apart.
 
 </details>

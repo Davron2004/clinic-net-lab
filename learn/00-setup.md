@@ -54,7 +54,7 @@ a plain host with `IP`, `GW`, `DNS`, `SERVICES`. The boot script is
 
 Four details worth knowing:
 
-1. `network-mode: none` (topologies/clinic.clab.yml, line 24). Docker normally gives every
+1. `network-mode: none` (topologies/clinic.clab.yml, under `defaults:`). Docker normally gives every
    container a "management" NIC that reaches the internet. Here there is none. Every packet
    must cross a lab cable, so nothing can sneak around the firewall. The "internet" is
    itself a container (`internet`, 203.0.113.10).
@@ -133,22 +133,29 @@ Nothing is changed.
 
 <details><summary>Answers</summary>
 
-**Exercise 0.1.** Verified result: 6 flows go BROKEN, nothing else changes.
+**Exercise 0.1.** Verified result: 4 flows go BROKEN and 5 go ERROR, nothing else changes.
 
 ```
   BROKEN    A01  reception-pc -> emr:443
   BROKEN    A02  doctor-pc -> emr:443
   BROKEN    A06  lab-analyzer -> emr:2575
   BROKEN    R01  home-doctor -> emr:443
-  BROKEN    S01  emr -> siem:1514
-  BROKEN    S02  emr -> siem:1515
-  (0 violations, 6 broken)
+  ERROR     D16  emr -> internet:443       source machine is not up: cannot ping its gateway 10.10.20.1
+  ERROR     D33  emr -> pacs:8042
+  ERROR     D34  emr -> gateway:53
+  ERROR     S01  emr -> siem:1514
+  ERROR     S02  emr -> siem:1515
+  Default-deny sweep: 1344 ports tried, 0 holes, 168 errors
+  52/61 flows match policy  (0 violations, 4 broken, 5 errors)
 ```
 
-Every flow that needs the EMR as a source or a target breaks. Every flow that expects a
-block still passes (a cut cable also blocks), which is why "deny" results alone cannot prove
-a firewall works (see stage 04). On the EMR, `ip -br -4 addr` shows `eth1 DOWN`: the
-"cable" is a real interface state. After `ip link set eth4 up` the suite is fully green again.
+Every flow that needs the EMR as a target breaks (BROKEN: the front desk really cannot open
+the EMR). Every flow that starts on the EMR is an ERROR: the suite checks each source machine
+first, and the EMR cannot even ping its gateway, so the test says "I could not tell" instead
+of counting its forbidden flows as blocks (D16, D33, D34). A cut cable also blocks, which is
+why "deny" results alone cannot prove a firewall works (see stage 04). On the EMR,
+`ip -br -4 addr` shows `eth1 DOWN`: the "cable" is a real interface state. After
+`ip link set eth4 up` the suite is fully green again (give the EMR a moment).
 
 **Exercise 0.2.** The EMR's `iflink` is `1209`. On the switch `1209: eth4@if1210` is the
 line. So the EMR is cabled to switch port `eth4`, matching `switch:eth4 <-> emr:eth1` in
