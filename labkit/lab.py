@@ -64,6 +64,9 @@ def sh(node_container, cmd, timeout=30):
 ALIVE_CHECK = (
     'test -f /run/clinic/ready || { echo "has not finished booting"; exit 1; }; '
     "gw=$(ip -4 route show default | awk '{print $3; exit}'); "
+    # A machine configured with a gateway (static GW or DHCP) must still have
+    # its default route; only the internet node legitimately has none.
+    'if [ -z "$gw" ] && { [ -n "${GW:-}" ] || [ "${IP:-}" = dhcp ]; }; then echo "has lost its default route"; exit 1; fi; '
     'if [ -n "$gw" ]; then ping -c 1 -W 2 "$gw" >/dev/null || { echo "cannot ping its gateway $gw"; exit 1; }; fi'
 )
 

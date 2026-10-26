@@ -13,7 +13,8 @@
 #
 # Environment: CLINIC_LAB (lab name, default clinic), MAP_PORT (default 8080),
 # CLINIC_IMAGE_TAG (tag for locally built images, default dev). Use different
-# values to run several labs side by side. CLINIC_TRAFFIC=0 starts the lab
+# values, each from its own checkout (git worktree), to run several labs side
+# by side: a checkout has one run/ directory. CLINIC_TRAFFIC=0 starts the lab
 # without routine background traffic.
 # CLINIC_MONITORING=0 runs without the SIEM (Wazuh): boots faster, uses
 # about 500 MiB less memory and skips the Wazuh image (2.7 GB on disk).
@@ -223,6 +224,6 @@ case "$cmd" in
              printf '  %-28s %s\n' "monitoring (SIEM)" "$s" ;;
     shell)   [ $# -ge 1 ] || fail "usage: ./lab shell <node>"
              docker exec -it "clab-$LAB-$1" bash ;;
-    help|-h|--help) sed -n '2,21p' "$0" | sed -e 's/^# \{0,1\}//' -e "s|localhost:8080|localhost:$MAP_PORT|" ;;
+    help|-h|--help) awk 'NR > 1 && !/^#/ {exit} NR > 1' "$0" | sed -e 's/^# \{0,1\}//' -e "s|localhost:8080|localhost:$MAP_PORT|" ;;
     *)       fail "unknown command '$cmd' (try ./lab help)" ;;
 esac
