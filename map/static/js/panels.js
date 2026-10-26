@@ -4,6 +4,7 @@
 
 import { icon } from './icons.js';
 import { RESULT_ICON, clock, outcome, plural, service, timeAgo } from './words.js';
+import { reducedMotion } from './scene.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -69,6 +70,14 @@ export class Header {
 
 // ------------------------------------------------------------------ records
 
+// Were the damaged records encrypted? Ransomware replaces each record with an
+// encrypted copy under a new name, so the originals are missing and new files
+// appeared. That is still true when a repeat attack finds nothing left to
+// encrypt (it reports 0 encrypted this time).
+export function recordsEncrypted(rec) {
+  return Boolean(rec?.encrypted) || (rec?.missing > 0 && rec?.added > 0);
+}
+
 export class RecordsCard {
   constructor() {
     this.el = $('#records-card');
@@ -99,7 +108,7 @@ export class RecordsCard {
     if (rec.phase === 'encrypting') {
       foot = `${icon('lock', 'ic ic--inline')} Ransomware is encrypting records`;
     } else if (hit) {
-      foot = `${plural(lost, 'record')} ${encrypted ? 'encrypted' : 'damaged'} · checked ${clock(rec.ts)}`;
+      foot = `${plural(lost, 'record')} ${recordsEncrypted(rec) ? 'encrypted' : 'changed or missing'} · checked ${clock(rec.ts)}`;
     } else {
       foot = `${icon('shieldCheck', 'ic ic--inline')} All fingerprints match · checked ${clock(rec.ts)}`;
     }
@@ -129,6 +138,11 @@ export class RecordsCard {
 
 // ------------------------------------------------------------------ tests
 
+// A test that could not be run (the probe itself failed): "could not test".
+export function isError(r) {
+  return Boolean(r) && String(r.observed || '').toLowerCase() === 'error';
+}
+
 export class TestsCard {
   constructor() {
     this.el = $('#tests-card');
@@ -148,10 +162,14 @@ export class TestsCard {
     const running = Boolean(tests?.running);
     const summary = tests?.summary;
     const total = this.flows.length;
+    // A probe that could not run (observed "error") says nothing about the
+    // network: it is neither a pass nor a failure.
+    const failed = (f) => results[f.id] && !results[f.id].pass && !isError(results[f.id]);
     const done = this.flows.filter((f) => results[f.id]).length;
     const passed = this.flows.filter((f) => results[f.id]?.pass).length;
-    const violations = this.flows.filter((f) => results[f.id] && !results[f.id].pass && f.expect === 'deny').length;
-    const broken = this.flows.filter((f) => results[f.id] && !results[f.id].pass && f.expect === 'allow').length;
+    const errors = this.flows.filter((f) => isError(results[f.id])).length;
+    const violations = this.flows.filter((f) => failed(f) && f.expect === 'deny').length;
+    const broken = this.flows.filter((f) => failed(f) && f.expect === 'allow').length;
     const any = done > 0;
 
     let meta = 'Not run yet';
@@ -159,31 +177,41 @@ export class TestsCard {
     else if (summary?.ts) meta = `Last run ${timeAgo(summary.ts)}`;
     let state = 'idle';
     if (running) state = 'running';
-    else if (any) state = passed === done && done > 0 ? 'ok' : 'bad';
+    else if (violations || broken) state = 'bad';
+    else if (any) state = errors ? 'unsure' : 'ok';
     this.el.dataset.state = state;
 
     const cell = (f) => {
       const r = results[f.id];
       let cls = 'pending';
       let glyph = '';
-      if (r) {
-        if (r.pass) { cls = 'pass'; glyph = icon('check'); } else if (f.expect === 'deny') { cls = 'violation'; glyph = icon('alert'); } else { cls = 'broken'; glyph = icon('x'); }
+      let verdict = 'not run';
+      if (isError(r)) {
+        cls = 'error'; glyph = icon('help'); verdict = 'could not test';
+      } else if (r?.pass) {
+        cls = 'pass'; glyph = icon('check'); verdict = 'as policy says';
+      } else if (r && f.expect === 'deny') {
+        cls = 'violation'; glyph = icon('alert'); verdict = 'got through';
+      } else if (r) {
+        cls = 'broken'; glyph = icon('x'); verdict = 'blocked';
       }
-      const verdict = !r ? 'not run' : r.pass ? 'as policy says' : f.expect === 'deny' ? 'got through' : 'blocked';
       return `<li class="cell cell--${cls}" title="${esc(f.id)} · ${esc(f.what)} (${verdict})" aria-label="${esc(f.id)} ${esc(f.what)}: ${verdict}">${glyph}</li>`;
     };
     const allow = this.flows.filter((f) => f.expect === 'allow');
     const deny = this.flows.filter((f) => f.expect !== 'allow');
     const num = any ? passed : '–';
+    // One finding per line, so a line never breaks in the middle of one.
+    const line = (html) => `<span class="foot-line">${html}</span>`;
+    const unsure = errors ? line(`${plural(errors, 'connection')} could not be tested`) : '';
     let foot;
     if (!any) foot = 'Sends real traffic between every pair that matters.';
     else if (running) foot = `${plural(violations, 'violation')} so far`;
     else if (violations || broken) {
-      const got = violations ? `<b>${plural(violations, 'forbidden connection')}</b> got through` : '';
-      const lost = broken ? `${plural(broken, 'needed connection')} blocked` : '';
-      foot = [got, lost].filter(Boolean).join(' · ');
-    }
-    else foot = `${icon('shieldCheck', 'ic ic--inline')} No violations · ${allow.length} allowed, ${deny.length} blocked`;
+      const got = violations ? line(`<b>${plural(violations, 'forbidden connection')}</b> got through`) : '';
+      const lost = broken ? line(`${plural(broken, 'needed connection')} blocked`) : '';
+      foot = got + lost + unsure;
+    } else if (errors) foot = unsure;
+    else foot = `${icon('shieldCheck', 'ic ic--inline')} No violations: all as the policy says`;
 
     this.el.innerHTML = `
       <header class="card-head"><h2>Isolation tests</h2><span class="card-meta">${meta}</span></header>
@@ -247,6 +275,16 @@ export class AlertsCard {
     this.el = $('#alerts-card');
     this.groups = [];
     this.monitoring = null;
+    // The isolation tests set off alerts on purpose (that is the monitor
+    // working). They would only alarm someone watching, so they stay out of
+    // the list unless asked for.
+    this.showTests = false;
+    this.el.addEventListener('click', (e) => {
+      if (!e.target.closest('.alerts-toggle')) return;
+      this.showTests = !this.showTests;
+      this.draw();
+    });
+    new ResizeObserver(() => this.fit()).observe(this.el);
   }
 
   render(alerts, nodeLabel, monitoring) {
@@ -283,7 +321,9 @@ export class AlertsCard {
   }
 
   draw(fresh = null) {
-    const items = [...this.groups].sort((a, b) => b.ts - a.ts);
+    const all = [...this.groups].sort((a, b) => b.ts - a.ts);
+    const fromTests = all.filter((g) => g.during === 'test').length;
+    const items = this.showTests ? all : all.filter((g) => g.during !== 'test');
     let list;
     if (items.length) {
       list = items.map((g) => {
@@ -297,16 +337,56 @@ export class AlertsCard {
             <p class="alert-meta">${tag}${who ? `${esc(who)} · ` : ''}${timeAgo(g.ts)}</p>
           </div>
         </li>`;
-      }).join('');
+      }).join('') + '<li class="alerts-more" hidden></li>';
     } else if (this.monitoring === 'off') {
       list = `<li class="alerts-empty">${icon('bell')}<span>Security monitoring is off for this lab, so nothing raises alerts.</span></li>`;
+    } else if (fromTests) {
+      list = `<li class="alerts-empty">${icon('shieldCheck')}<span>No alerts outside the isolation tests.</span></li>`;
     } else {
       list = `<li class="alerts-empty">${icon('bell')}<span>No alerts. Suspicious activity seen by the security monitor shows up here.</span></li>`;
     }
-    const total = items.reduce((n, g) => n + g.count, 0);
+    let meta = '';
+    if (fromTests) {
+      const what = this.showTests ? `Hide ${fromTests} from tests` : `${fromTests} from tests hidden`;
+      meta = `<button class="alerts-toggle" type="button" aria-pressed="${this.showTests}" title="Alerts the isolation tests set off on purpose">${what}</button>`;
+    }
     this.el.innerHTML = `
-      <header class="card-head"><h2>Alerts</h2><span class="card-meta">${total || ''}</span></header>
+      <header class="card-head"><h2>Alerts</h2><span class="card-meta">${meta}</span></header>
       <ol class="alerts">${list}</ol>`;
+    this.fit();
+    const li = fresh && this.el.querySelector('.alert.is-new');
+    if (li && !li.hidden && !reducedMotion()) {
+      // Open a gap of the new line's height, so the lines below slide down
+      // while it fades in, instead of jumping.
+      const h = li.offsetHeight;
+      li.animate(
+        [{ height: '0px', opacity: 0 }, { height: `${h}px`, opacity: 0, offset: 0.45 }, { height: `${h}px`, opacity: 1 }],
+        { duration: 650, easing: 'cubic-bezier(.2,.8,.3,1)' },
+      );
+    }
+  }
+
+  // Show only whole lines: the ones that do not fit are summed up in one
+  // line at the bottom instead of being cut off at the card's edge.
+  fit() {
+    const list = this.el.querySelector('.alerts');
+    const more = list?.querySelector('.alerts-more');
+    if (!more) return;
+    const items = [...list.querySelectorAll('.alert')];
+    for (const li of items) li.hidden = false;
+    more.hidden = true;
+    const limit = list.clientHeight;
+    const bottom = (el) => el.offsetTop + el.offsetHeight;
+    if (!items.length || bottom(items[items.length - 1]) <= limit) return;
+    more.hidden = false;
+    more.textContent = plural(1, 'earlier alert');
+    let hidden = 0;
+    for (let i = items.length - 1; i > 0 && bottom(more) > limit; i -= 1) {
+      items[i].hidden = true;
+      hidden += 1;
+      more.textContent = `${plural(hidden, 'earlier alert')}`;
+    }
+    if (!hidden) more.hidden = true;
   }
 
   tick() {
@@ -399,6 +479,31 @@ export class Toasts {
   constructor() {
     this.el = $('#toasts');
     this.open = new Map();
+    this.maxHeight = Infinity;
+  }
+
+  // The column the toasts live in, in pixels of the map's box: under the
+  // outside world, left of the clinic's wall (see main.js).
+  place({ left, width, bottom, maxHeight }) {
+    Object.assign(this.el.style, { left: `${left}px`, width: `${width}px`, bottom: `${bottom}px` });
+    this.maxHeight = maxHeight;
+    this.fit();
+  }
+
+  // Never let the stack climb into the map above it: drop the least severe
+  // toast (of equal ones, the oldest, but not the one just shown) until it
+  // fits. A burst of minor alerts never pushes out the one that matters.
+  fit(keep = null) {
+    let shown = [...this.el.children].filter((x) => !x.classList.contains('is-leaving'));
+    while (shown.length > 1 && this.el.offsetHeight > this.maxHeight) {
+      const level = (x) => Number(x.dataset.level);
+      const weakest = shown.reduce((w, x) => {
+        if (level(x) !== level(w)) return level(x) < level(w) ? x : w;
+        return w === keep ? x : w;
+      });
+      this.close(weakest, true);
+      shown = shown.filter((x) => x !== weakest);
+    }
   }
 
   // key: toasts with the same key update one another (a burst of the same
@@ -408,7 +513,7 @@ export class Toasts {
   show({ kind = 'alert', title, text, seconds = 6, key = null, count = 1, level = 0 }) {
     let t = key ? this.open.get(key) : null;
     if (!t || !t.isConnected) {
-      const shown = [...this.el.children];
+      const shown = [...this.el.children].filter((x) => !x.classList.contains('is-leaving'));
       if (shown.length >= 2) {
         const weakest = shown.reduce((w, x) => (Number(x.dataset.level) < Number(w.dataset.level) ? x : w));
         if (Number(weakest.dataset.level) > level) return;
@@ -427,12 +532,11 @@ export class Toasts {
     t.dataset.level = String(level);
     t.className = `toast toast--${kind}${t.classList.contains('is-shown') ? ' is-shown' : ''}`;
     const glyph = { error: 'x', critical: 'alert' }[kind] || 'bell';
-    // The count sits on the second line: the title may be clamped.
-    const times = count > 1 ? `<span class="toast-count">${count} times</span>` : '';
-    const meta = [text ? esc(text) : '', times].filter(Boolean).join(' · ');
+    const times = count > 1 ? `<span class="toast-count">×${count}</span>` : '';
     t.innerHTML = `
       <span class="toast-icon">${icon(glyph)}</span>
-      <div class="toast-body"><p class="toast-title">${esc(title)}</p>${meta ? `<p class="toast-text">${meta}</p>` : ''}</div>`;
+      <div class="toast-body"><p class="toast-title">${esc(title)}${times}</p>${text ? `<p class="toast-text">${esc(text)}</p>` : ''}</div>`;
+    this.fit(t);
     clearTimeout(t.timer);
     t.timer = setTimeout(() => this.close(t), seconds * 1000);
   }
@@ -446,6 +550,7 @@ export class Toasts {
       return;
     }
     t.classList.remove('is-shown');
+    t.classList.add('is-leaving');
     setTimeout(() => t.remove(), 400);
   }
 }

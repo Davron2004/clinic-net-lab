@@ -20,6 +20,12 @@ function useIcon(name, x, y, size, parent, cls = '') {
 }
 
 const MARK_FONT = `700 11px ${FONT_STACK}`;
+const BADGE_FONT = `700 10.5px ${FONT_STACK}`;
+const NODE_ICON_Y = 30;
+// A status pill takes the address line's place, at the same height on every
+// card, clear of a two-line name and of the card's bottom edge.
+const BADGE_Y = CARD.h - 18;
+const BADGE_H = 18;
 const MARK_ICON = { allowed: 'check', blocked: 'x', broken: 'x', violation: 'alert' };
 const MARK_LIFE = { allowed: 2200, blocked: 2600, broken: 4000, violation: 6000 };
 
@@ -53,6 +59,8 @@ export class Scene {
       zones: layer('zones'),
       wires: layer('wires'),
       flows: layer('flows'),
+      // Labels on wires (the VPN tag) sit above the connections crossing them.
+      tags: layer('tags'),
       router: layer('router'),
       nodes: layer('nodes'),
       fx: layer('fx'),
@@ -121,7 +129,7 @@ export class Scene {
   _vpnTag(path) {
     // Placed outside the building: the tunnel runs over the internet.
     const p = path.getPointAtLength(path.getTotalLength() * 0.2);
-    const g = svgEl('g', { class: 'vpn-tag', transform: `translate(${p.x} ${p.y})` }, this.layers.wires);
+    const g = svgEl('g', { class: 'vpn-tag', transform: `translate(${p.x} ${p.y})` }, this.layers.tags);
     svgEl('rect', { class: 'vpn-tag-pill', x: -24, y: -10, width: 48, height: 20, rx: 10 }, g);
     useIcon('lock', -17, -6, 12, g, 'vpn-tag-icon');
     const t = svgEl('text', { class: 'vpn-tag-text', x: -2, y: 4 }, g);
@@ -140,8 +148,9 @@ export class Scene {
       t.textContent = 'Internet router';
       const s = svgEl('text', { class: 'router-sub', x: r.w / 2, y: 80, 'text-anchor': 'middle' }, rg);
       s.textContent = 'No firewall inside';
-      this._ports(rg, r, [r.wan, { x: r.cx, y: r.y, n: [0, -1] }, { x: r.cx, y: r.y + r.h, n: [0, 1] }]);
+      this._ports(rg, r, [r.wan, r.lan]);
       this.routerCounts = null;
+      this._switch();
       return;
     }
     const r = this.L.router;
@@ -154,13 +163,32 @@ export class Scene {
     t.textContent = 'Firewall';
     const s = svgEl('text', { class: 'router-sub', x: 78, y: r.h / 2 + 15 }, rg);
     s.textContent = 'Checks every connection';
-    // Live counters: how many connections it let through and stopped.
+    // Live counters: how many new connections it let through and stopped
+    // since the lab started (routine traffic, tests and attacks alike). The
+    // heading keeps them from reading as test results.
     const cg = svgEl('g', { class: 'router-counts', transform: `translate(${r.w - 18} ${r.h / 2})` }, rg);
-    const allowed = svgEl('text', { class: 'router-count router-count--allowed', x: 0, y: -4, 'text-anchor': 'end' }, cg);
-    const blocked = svgEl('text', { class: 'router-count router-count--blocked', x: 0, y: 15, 'text-anchor': 'end' }, cg);
+    const head = svgEl('text', { class: 'router-count-head', x: 0, y: -16, 'text-anchor': 'end' }, cg);
+    head.textContent = 'Since lab start';
+    const allowed = svgEl('text', { class: 'router-count router-count--allowed', x: 0, y: 2, 'text-anchor': 'end' }, cg);
+    const blocked = svgEl('text', { class: 'router-count router-count--blocked', x: 0, y: 19, 'text-anchor': 'end' }, cg);
     this.routerCounts = { allowed, blocked };
     this.setCounters(this._counters || { allowed: 0, blocked: 0 });
     this._ports(rg, r, Object.values(r.ports).filter((p, i, all) => all.indexOf(p) === i));
+  }
+
+  // The flat network's one switch: every machine inside plugs into it, so
+  // every machine can reach every other.
+  _switch() {
+    const S = this.L.flatSwitch;
+    const sg = svgEl('g', { class: 'switch', transform: `translate(${S.x} ${S.y})` }, this.layers.router);
+    svgEl('rect', { class: 'switch-card', width: S.w, height: S.h, rx: 16 }, sg);
+    svgEl('circle', { class: 'switch-icon-bg', cx: 38, cy: S.h / 2, r: 19 }, sg);
+    useIcon('switch', 27, S.h / 2 - 11, 22, sg, 'switch-icon');
+    const t = svgEl('text', { class: 'switch-title', x: 68, y: S.h / 2 - 3 }, sg);
+    t.textContent = 'One network switch';
+    const sub = svgEl('text', { class: 'switch-sub', x: 68, y: S.h / 2 + 15 }, sg);
+    sub.textContent = 'No firewall between machines';
+    this._ports(sg, S, [S.west, ...Object.values(S.ports)]);
   }
 
   _ports(group, r, ports) {
@@ -182,10 +210,10 @@ export class Scene {
     for (const n of Object.values(this.L.nodes)) {
       const g = svgEl('g', { class: 'node', 'data-node': n.id, transform: `translate(${n.x} ${n.y})` }, this.layers.nodes);
       svgEl('rect', { class: 'node-card', width: CARD.w, height: CARD.h, rx: 16 }, g);
-      svgEl('circle', { class: 'node-icon-bg', cx: CARD.w / 2, cy: 29, r: 18 }, g);
-      useIcon(iconFor(n), CARD.w / 2 - 11, 18, 22, g, 'node-icon');
+      svgEl('circle', { class: 'node-icon-bg', cx: CARD.w / 2, cy: NODE_ICON_Y, r: 18 }, g);
+      useIcon(iconFor(n), CARD.w / 2 - 11, NODE_ICON_Y - 11, 22, g, 'node-icon');
       const lines = wrapLabel(n.label, CARD.w - 14, LABEL_FONT);
-      const blockTop = lines.length === 1 ? 66 : 61;
+      const blockTop = lines.length === 1 ? 68 : 61;
       const label = svgEl('text', { class: 'node-label', x: CARD.w / 2, y: blockTop, 'text-anchor': 'middle' }, g);
       lines.forEach((line, i) => {
         const ts = svgEl('tspan', { x: CARD.w / 2, dy: i === 0 ? 0 : 15 }, label);
@@ -195,7 +223,6 @@ export class Scene {
         class: 'node-ip', x: CARD.w / 2, y: blockTop + (lines.length - 1) * 15 + 17, 'text-anchor': 'middle',
       }, g);
       ip.textContent = n.ip || (n.dhcp ? 'DHCP' : '');
-      g.ipY = Number(ip.getAttribute('y'));
       const title = svgEl('title', {}, g);
       title.textContent = `${n.label}${n.ip ? ` · ${n.ip}` : ''}`;
       this.nodeEls[n.id] = g;
@@ -275,7 +302,7 @@ export class Scene {
     m.n += by;
     if (m.n > 1) {
       m.count.textContent = String(m.n);
-      const w = 20 + textWidth(String(m.n), MARK_FONT) + 4;
+      const w = 20 + textWidth(String(m.n), MARK_FONT) + 8;
       m.pill.setAttribute('width', w);
     }
     m.g.classList.remove('is-leaving');
@@ -301,7 +328,7 @@ export class Scene {
     if (!g) return;
     const icons = { infected: 'bug', locked: 'lock', alerted: 'bell' };
     const label = text || { infected: 'Infected', locked: 'Locked', alerted: 'Alert' }[kind];
-    const w = Math.min(CARD.w - 10, 30 + textWidth(label || '', MARK_FONT));
+    const w = Math.min(CARD.w - 12, 28 + textWidth(label || '', BADGE_FONT));
     const old = g.querySelector('.badge');
     if (old && kind && old.dataset.kind === kind) {
       // Same badge, new count ("3 locked" -> "4 locked"): no new entrance.
@@ -309,18 +336,18 @@ export class Scene {
       old.querySelector('.badge-pill').setAttribute('width', w);
       old.querySelector('.badge-icon').setAttribute('x', -w / 2 + 7);
       const t = old.querySelector('.badge-text');
-      t.setAttribute('x', -w / 2 + 23);
+      t.setAttribute('x', -w / 2 + 22);
       t.textContent = label;
       return;
     }
     old?.remove();
     for (const k of ['infected', 'locked', 'alerted']) g.classList.toggle(`is-${k}`, k === kind);
     if (!kind) return;
-    const b = svgEl('g', { class: `badge badge--${kind}`, 'data-kind': kind, transform: `translate(${CARD.w / 2} ${g.ipY - 4})` }, g);
+    const b = svgEl('g', { class: `badge badge--${kind}`, 'data-kind': kind, transform: `translate(${CARD.w / 2} ${BADGE_Y})` }, g);
     const inner = svgEl('g', { class: 'badge-inner' }, b);
-    svgEl('rect', { class: 'badge-pill', x: -w / 2, y: -10, width: w, height: 20, rx: 10 }, inner);
-    useIcon(icons[kind], -w / 2 + 7, -6, 12, inner, 'badge-icon');
-    const t = svgEl('text', { class: 'badge-text', x: -w / 2 + 23, y: 4 }, inner);
+    svgEl('rect', { class: 'badge-pill', x: -w / 2, y: -BADGE_H / 2, width: w, height: BADGE_H, rx: BADGE_H / 2 }, inner);
+    useIcon(icons[kind], -w / 2 + 7, -5.5, 11, inner, 'badge-icon');
+    const t = svgEl('text', { class: 'badge-text', x: -w / 2 + 22, y: 3.7 }, inner);
     t.textContent = label;
     if (!redraw && !reducedMotion()) {
       inner.animate(

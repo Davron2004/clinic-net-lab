@@ -17,24 +17,36 @@ A live picture of the lab network for people who do not read firewall rules.
 - **Traffic the router never sees.** Two machines in the same zone talk
   through that zone's switch, so their connection turns at the zone's port
   instead of going up to the firewall. In the flat "before" network there are
-  no zones and the router sits at the edge, so every connection is drawn
-  straight from one machine to the other.
+  no zones: every machine is wired to one switch in the middle, and the
+  router sits at the edge, so every connection goes from one machine through
+  the switch to the other, with nothing in between that could stop it.
 - **Patient records** (sidebar): how many of the EMR's records still match
   the fingerprints taken at boot, and which ones the ransomware encrypted.
 - **Isolation tests** (sidebar): one square per flow in `policy/clinic.yml`,
-  lit as each result arrives.
+  lit as each result arrives. A test whose probe could not run (`observed:
+  "error"`) is a grey "could not test" square, neither a pass nor a block.
 - **Alerts** from the security monitor, as a list and a short pop-up, with the
   machines involved marked on the map. Repeats of the same alert on the same
   machine within a minute (ransomware sets off one per encrypted record) are
   one line and one pop-up with a count. The isolation tests do forbidden
-  things on purpose, so the alerts they set off are listed as "During test",
-  without pop-ups.
+  things on purpose, so the alerts they set off get no pop-ups and are left
+  out of the list ("3 from tests hidden" shows them, marked "During test").
+- **Firewall counters**: new connections the firewall let through and
+  stopped since the lab started, routine traffic included.
 - **Routine traffic** (`labkit/traffic.py`): the ordinary, allowed work of the
   clinic, so the map looks alive between demos.
 
 The two buttons run `tests/isolation.py` and `scenarios/ransomware.py` in the
 map's container, one at a time. A run started with `./lab test` or
 `./lab attack` shows up the same way.
+
+The map's container can drive Docker, so the server only starts a run for
+this page: the request must be addressed to `localhost` or `127.0.0.1` on
+`MAP_PORT`, come from that origin, and carry an `X-Clinic-Map` header. Other
+web pages open in the same browser get `403` (a plain form cannot add the
+header, and a script on another site would need a CORS preflight the server
+never grants). The Host check also applies to reading the page and its event
+stream, which keeps DNS-rebinding sites out.
 
 ## Where the data comes from
 

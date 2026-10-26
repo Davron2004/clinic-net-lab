@@ -358,7 +358,9 @@ button { font: inherit; }
   display: flex;
   align-items: center;
   gap: 14px;
-  max-width: min(660px, calc(100% - 40px));
+  /* left: 50% would otherwise cap its shrink-to-fit width at half the stage. */
+  width: max-content;
+  max-width: min(780px, calc(100% - 40px));
   padding: 12px 20px 12px 12px;
   border-radius: 18px;
   background: rgba(16, 22, 32, 0.82);
@@ -390,7 +392,8 @@ button { font: inherit; }
 .banner-text { margin-top: 1px; font-size: 13.5px; color: var(--text-2); line-height: 1.35; }
 
 /* Bottom-left of the map: under the outside world, the one corner that
-   stays empty in both networks however many zones there are. */
+   stays empty in both networks however many zones there are. main.js lines
+   the column up with the outside zones and the clinic's wall. */
 .toasts {
   position: absolute;
   left: 16px;
@@ -422,20 +425,29 @@ button { font: inherit; }
 .toast--error { box-shadow: inset 0 0 0 1px rgba(255, 95, 87, 0.45), 0 14px 40px rgba(0, 0, 0, 0.45); }
 .toast--critical { box-shadow: inset 0 0 0 1.5px rgba(255, 45, 135, 0.7), 0 14px 40px rgba(255, 45, 135, 0.18); }
 .toast--critical .toast-icon { color: var(--breach); }
-.toast-count { color: var(--warn); font-weight: 600; font-variant-numeric: tabular-nums; }
-.toast--critical .toast-count { color: #ff8cbf; }
+.toast-count {
+  --c: var(--warn);
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--c);
+  background: color-mix(in srgb, var(--c) 16%, transparent);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.toast--critical .toast-count { --c: #ff8cbf; }
 .toast-icon { color: var(--warn); margin-top: 1px; }
 .toast--error .toast-icon { color: var(--block); }
+.toast-body { min-width: 0; }
 .toast-title {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
   font-size: 13px;
   font-weight: 600;
   line-height: 1.35;
+  text-wrap: pretty;
 }
-.toast-text { margin-top: 2px; font-size: 12.5px; color: var(--text-2); }
+.toast-text { margin-top: 3px; font-size: 12.5px; line-height: 1.35; color: var(--text-2); }
 
 /* ------------------------------------------------------------ sidebar cards */
 
@@ -552,28 +564,51 @@ button { font: inherit; }
 .cell--pass { background: var(--ok); box-shadow: none; }
 .cell--violation { background: var(--breach); box-shadow: none; color: #fff; }
 .cell--broken { background: var(--warn); box-shadow: none; color: #1d1200; }
+/* Could not test: neutral grey, neither a pass nor a block. */
+.cell--error { background: #4a5263; box-shadow: none; color: #e3e8f0; }
+#tests-card[data-state="unsure"] { --state: var(--text-2); }
+.foot-line { display: block; }
 #tests-card[data-state="running"] .cell--pending { animation: breathe 1.2s ease-in-out infinite; }
 .cell.is-new { animation: pop 0.35s cubic-bezier(.3, .7, .4, 1.4); }
 @keyframes pop { from { transform: scale(0.4); } }
 
 /* Alerts */
 .alerts {
+  position: relative;
   flex: 1;
+  min-height: 0;
   margin: 2px -6px 0;
   padding: 0;
   list-style: none;
-  overflow-y: auto;
-  scrollbar-width: thin;
+  overflow: hidden;
 }
 .alert {
   display: flex;
   gap: 10px;
   padding: 8px 6px;
   border-radius: 10px;
+  overflow: hidden;
 }
+.alert[hidden], .alerts-more[hidden] { display: none; }
 .alert + .alert { border-top: 1px solid var(--hairline); border-radius: 0; }
-.alert.is-new { animation: alert-in 0.5s cubic-bezier(.2, .8, .3, 1); }
-@keyframes alert-in { from { opacity: 0; transform: translateY(-6px); background: rgba(255, 179, 64, 0.12); } }
+.alert.is-new { animation: alert-flash 1.6s ease-out; }
+@keyframes alert-flash { from { background: rgba(255, 179, 64, 0.1); } }
+.alerts-more {
+  padding: 8px 6px 0 20px;
+  border-top: 1px solid var(--hairline);
+  font-size: 12px;
+  color: var(--text-3);
+}
+.alerts-toggle {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.alerts-toggle:hover { color: var(--text-2); text-decoration: underline; text-underline-offset: 2px; }
+.alerts-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .alert-sev { width: 4px; border-radius: 2px; flex: none; background: var(--sev); }
 .alert--low { --sev: #6f8db8; }
 .alert--medium { --sev: var(--warn); }
@@ -668,6 +703,7 @@ button { font: inherit; }
 .router-title { fill: var(--text); font-size: 17px; font-weight: 650; letter-spacing: -0.015em; }
 .router-sub { fill: var(--text-2); font-size: 11.5px; }
 .router-count { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.router-count-head { fill: var(--text-3); font-size: 9.5px; font-weight: 650; letter-spacing: 0.08em; text-transform: uppercase; }
 .router-count--allowed { fill: var(--ok); }
 .router-count--blocked { fill: var(--block); }
 .router-port { fill: #6f9be6; }
@@ -677,6 +713,15 @@ button { font: inherit; }
 .router--flat .router-title { font-size: 12.5px; font-weight: 600; letter-spacing: -0.005em; }
 .router--flat .router-sub { font-size: 10.5px; fill: #ffbf73; }
 .router--flat .router-port { fill: rgba(255, 165, 61, 0.7); }
+
+/* The flat network's one switch: the same orange as the flat router, since
+   nothing on it checks anything. */
+.switch-card { fill: #171b22; stroke: rgba(255, 165, 61, 0.45); stroke-width: 1.2; }
+.switch-icon-bg { fill: rgba(255, 165, 61, 0.13); }
+.switch-icon { color: #ffbf73; }
+.switch-title { fill: var(--text); font-size: 14.5px; font-weight: 650; letter-spacing: -0.01em; }
+.switch-sub { fill: #ffbf73; font-size: 11.5px; }
+.switch .router-port { fill: rgba(255, 165, 61, 0.7); }
 
 .node-card {
   fill: var(--card);
@@ -706,7 +751,7 @@ button { font: inherit; }
 .badge--alerted .badge-pill { fill: var(--warn); }
 .badge-icon { color: #fff; stroke-width: 2.2; }
 .badge--alerted .badge-icon { color: #1d1200; }
-.badge-text { fill: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.01em; }
+.badge-text { fill: #fff; font-size: 10.5px; font-weight: 700; letter-spacing: 0.01em; }
 .badge--alerted .badge-text { fill: #1d1200; }
 
 .pulse { fill: none; stroke-width: 2; }
