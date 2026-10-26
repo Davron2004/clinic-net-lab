@@ -1,0 +1,38 @@
+#!/bin/bash
+# Boots the SIEM machine. First it joins the lab network like every other
+# clinic machine (IP, GW from the topology), then it hands over to the Wazuh
+# image's own init (/init, s6-overlay), which starts the manager.
+#
+# Markers for ./lab up:
+#   /run/clinic/ready             on the network (the lab waits for this)
+#   /run/clinic/monitoring-ready  Wazuh is accepting agents (the lab waits
+#                                 for this only briefly; see ./lab)
+set -Eeuo pipefail
+
+log() { echo "[$(date +%H:%M:%S)] ${HOSTNAME}: $*"; }
+# Same rule as the other machines: on failure stay up for inspection.
+trap 'log "boot failed at line $LINENO"; exec sleep infinity' ERR
+
+# Containerlab plugs in the network cables after the container starts.
+cables() { local n=0 d; for d in /sys/class/net/eth[1-9]*; do [ -e "$d" ] && n=$((n + 1)); done; echo "$n"; }
+for _ in $(seq 1 600); do
+    [ "$(cables)" -ge "${CLAB_INTFS:-1}" ] && break
+    sleep 0.1
+done
+ip link set eth1 up
+ip addr add "$IP" dev eth1
+ip route add default via "$GW"
+mkdir -p /run/clinic
+touch /run/clinic/ready
+log "on the network as $IP"
+
+# Agents must know this password to enroll. ./lab up makes a new one for
+# every deployment under run/secrets/ (never committed).
+install -o root -g wazuh -m 0640 /clinic-run/secrets/authd.pass /var/ossec/etc/authd.pass
+
+# The normalized alert feed for the clinic map. The Wazuh integration that
+# writes it runs as the wazuh user, so hand it the file.
+touch /clinic-run/alerts.jsonl
+chown wazuh:wazuh /clinic-run/alerts.jsonl 2>/dev/null || chmod 0666 /clinic-run/alerts.jsonl
+
+exec /init

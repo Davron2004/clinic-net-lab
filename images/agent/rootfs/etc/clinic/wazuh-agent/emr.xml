@@ -1,0 +1,17 @@
+<!--
+  EMR server: watch the patient records folder.
+  realtime="yes" reports a change the moment it happens (Linux inotify)
+  instead of at the next scheduled scan. The daily full scan is a safety net.
+  Only the records folder is watched: watching the whole system would bury
+  the one alert that matters under package updates and log rotations.
+-->
+<ossec_config>
+  <syscheck>
+    <disabled>no</disabled>
+    <scan_on_start>yes</scan_on_start>
+    <frequency>86400</frequency>
+    <alert_new_files>yes</alert_new_files>
+    <directories realtime="yes" check_all="yes">/srv/emr/records</directories>
+    <synchronization><enabled>no</enabled></synchronization>
+  </syscheck>
+</ossec_config>

@@ -19,12 +19,14 @@ define DEVICES  = "eth2.30"
 define PRINTERS = "eth2.40"
 define GUEST    = "eth2.50"
 define VPN      = "wg0"       # remote access tunnel (WireGuard, 10.10.60.0/24)
+define SECURITY = "eth2.90"
 
 define EMR           = 10.10.20.10
 define PACS          = 10.10.20.20
 define IMAGING       = 10.10.30.10
 define LAB_ANALYZER  = 10.10.30.11
 define PRINTER       = 10.10.40.10
+define SIEM          = 10.10.90.10
 
 table inet clinic {
 
@@ -36,7 +38,7 @@ table inet clinic {
         ct state invalid drop
 
         # Ping the gateway from inside: basic troubleshooting.
-        iifname { $STAFF, $SERVERS, $DEVICES, $PRINTERS, $GUEST } icmp type echo-request accept
+        iifname { $STAFF, $SERVERS, $DEVICES, $PRINTERS, $GUEST, $SECURITY } icmp type echo-request accept
         # DNS for zones that browse by name. Devices and printers get none:
         # DNS queries can smuggle data out, and they only need fixed IPs.
         iifname { $STAFF, $SERVERS, $GUEST } meta l4proto { tcp, udp } th dport 53 accept
@@ -63,6 +65,7 @@ table inet clinic {
             $DEVICES  : jump from_devices,
             $PRINTERS : jump from_printers,
             $GUEST    : jump from_guest,
+            $SECURITY : jump from_security,
             $WAN      : jump from_internet,
             $VPN      : jump from_remote,
         }
@@ -78,7 +81,10 @@ table inet clinic {
     }
 
     chain from_servers {
-        # Servers start no connections of their own. Replies are handled above.
+        # Servers start no connections of their own, with one exception: the
+        # EMR server's security agent reports to the SIEM (1514 events,
+        # 1515 enrollment). Replies are handled above.
+        ip saddr $EMR ip daddr $SIEM tcp dport { 1514, 1515 } log group 0 prefix "allow:emr-siem" accept
         oifname $WAN log group 0 prefix "deny:server-internet" drop
         log group 0 prefix "deny:servers" drop
     }
@@ -111,6 +117,14 @@ table inet clinic {
         ip daddr $EMR tcp dport 443 log group 0 prefix "allow:remote-emr-https" accept
         oifname $WAN log group 0 prefix "deny:remote-internet" drop
         log group 0 prefix "deny:remote" drop
+    }
+
+    chain from_security {
+        # The SIEM only listens: agents connect to it, it connects to nothing.
+        # (The router's own agent talks to it directly from 10.10.90.1; the
+        # router's own traffic does not pass through this forward chain.)
+        oifname $WAN log group 0 prefix "deny:siem-internet" drop
+        log group 0 prefix "deny:security" drop
     }
 
     chain from_internet {

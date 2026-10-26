@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""clinic-probe reach <host> <port> [timeout]: can a TCP packet get to host:port?
+
+Exits 0 if the target answered at all: it accepted the connection, or it
+refused it (a TCP reset means the packet got through the network and the
+machine said "nothing listening here"). Exits 1 if nothing came back, which
+is what a firewall drop looks like.
+
+This tests the network path, not the program behind the port. The SIEM's
+flows use it so that the isolation tests pass even while Wazuh is still
+starting (or switched off): the firewall is what is under test.
+"""
+import errno
+import socket
+import sys
+
+host, port = sys.argv[1], int(sys.argv[2])
+timeout = float(sys.argv[3]) if len(sys.argv) > 3 else 3.0
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(timeout)
+try:
+    code = sock.connect_ex((host, port))
+except socket.timeout:
+    code = errno.ETIMEDOUT
+finally:
+    sock.close()
+sys.exit(0 if code in (0, errno.ECONNREFUSED) else 1)

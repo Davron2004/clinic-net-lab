@@ -1,0 +1,4 @@
+#!/bin/sh
+# Called by wazuh-integratord for each alert (see ossec.conf, <integration>).
+# Runs the Python script with the Python that ships inside Wazuh.
+exec /var/ossec/framework/python/bin/python3 /var/ossec/integrations/custom-clinic.py "$@"
