@@ -37,7 +37,7 @@ function nodeLabel(id) {
 
 const flows = new Flows(scene, {
   onStart(flow, item) {
-    captions.push(flow, nodeLabel, variant(), item.count);
+    captions.push(flow, nodeLabel, variant(), item.count, item.ports?.size || 1);
   },
   onArrive(flow, info) {
     const kind = flow.result;

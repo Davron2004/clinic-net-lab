@@ -321,10 +321,11 @@ export class Captions {
     this.el.replaceChildren();
   }
 
-  push(flow, nodeLabel, variant, count = 1) {
+  push(flow, nodeLabel, variant, count = 1, ports = 1) {
     const li = document.createElement('li');
     li.className = `caption caption--${flow.result}`;
-    const svc = service(flow.port, flow.proto);
+    // A scan touches many ports at once: say how many, not the first one.
+    const svc = ports > 1 ? `${ports} ports` : service(flow.port, flow.proto);
     const times = count > 1 ? ` <span class="caption-count">×${count}</span>` : '';
     li.innerHTML = `
       <span class="caption-icon">${icon(RESULT_ICON[flow.result] || 'arrow')}</span>
