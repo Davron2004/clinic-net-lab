@@ -17,7 +17,7 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: shellcheck
         run: |
           files=$(grep -rlE '^#!/(usr/)?bin/(env )?bash' lab config images scenarios tests 2>/dev/null || true)
@@ -34,7 +34,7 @@ jobs:
     env:
       CLINIC_TRAFFIC: "0"   # no background clinic traffic during tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Load kernel modules the lab uses
         # Containers share the host kernel; Docker Desktop has these built in,
@@ -78,7 +78,7 @@ jobs:
 
       - name: Upload reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: isolation-reports
           path: reports/
