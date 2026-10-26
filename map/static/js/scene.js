@@ -299,13 +299,24 @@ export class Scene {
     }
     const g = this.nodeEls?.[id];
     if (!g) return;
-    g.querySelector('.badge')?.remove();
-    for (const k of ['infected', 'locked', 'alerted']) g.classList.toggle(`is-${k}`, k === kind);
-    if (!kind) return;
     const icons = { infected: 'bug', locked: 'lock', alerted: 'bell' };
     const label = text || { infected: 'Infected', locked: 'Locked', alerted: 'Alert' }[kind];
-    const w = Math.min(CARD.w - 10, 30 + textWidth(label, MARK_FONT));
-    const b = svgEl('g', { class: `badge badge--${kind}`, transform: `translate(${CARD.w / 2} ${g.ipY - 4})` }, g);
+    const w = Math.min(CARD.w - 10, 30 + textWidth(label || '', MARK_FONT));
+    const old = g.querySelector('.badge');
+    if (old && kind && old.dataset.kind === kind) {
+      // Same badge, new count ("3 locked" -> "4 locked"): no new entrance.
+      old.querySelector('.badge-pill').setAttribute('x', -w / 2);
+      old.querySelector('.badge-pill').setAttribute('width', w);
+      old.querySelector('.badge-icon').setAttribute('x', -w / 2 + 7);
+      const t = old.querySelector('.badge-text');
+      t.setAttribute('x', -w / 2 + 23);
+      t.textContent = label;
+      return;
+    }
+    old?.remove();
+    for (const k of ['infected', 'locked', 'alerted']) g.classList.toggle(`is-${k}`, k === kind);
+    if (!kind) return;
+    const b = svgEl('g', { class: `badge badge--${kind}`, 'data-kind': kind, transform: `translate(${CARD.w / 2} ${g.ipY - 4})` }, g);
     const inner = svgEl('g', { class: 'badge-inner' }, b);
     svgEl('rect', { class: 'badge-pill', x: -w / 2, y: -10, width: w, height: 20, rx: 10 }, inner);
     useIcon(icons[kind], -w / 2 + 7, -6, 12, inner, 'badge-icon');

@@ -120,7 +120,9 @@ export class Flows {
 
   frame(now) {
     this.raf = 0;
-    const gap = this.queue.length > 12 ? BURST_GAP_MS : GAP_MS;
+    // Bursts, and the stream of files being encrypted, go faster so the
+    // picture keeps up with what is happening.
+    const gap = this.queue.length > 12 || this.queue[0]?.flow.stream ? BURST_GAP_MS : GAP_MS;
     if (this.queue.length && this.active.length < MAX_ACTIVE && now - this.lastStart >= gap) {
       this.start(this.queue.shift(), now);
       this.lastStart = now;

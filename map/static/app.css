@@ -514,11 +514,8 @@ button { font: inherit; }
 }
 .file .ic { width: 13px; height: 13px; }
 .file--pending { color: var(--text-3); background: rgba(255, 255, 255, 0.04); }
-.file--lost {
-  color: #fff;
-  background: var(--breach);
-  animation: lock-in 0.45s cubic-bezier(.3, .7, .4, 1);
-}
+.file--lost { color: #fff; background: var(--breach); }
+.file--lost.is-new { animation: lock-in 0.45s cubic-bezier(.3, .7, .4, 1); }
 @keyframes lock-in { from { transform: scale(0.6); opacity: 0.2; } }
 
 /* Tests */

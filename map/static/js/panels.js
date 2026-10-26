@@ -73,6 +73,7 @@ export class RecordsCard {
   constructor() {
     this.el = $('#records-card');
     this.total = 12;
+    this.lost = 0;
   }
 
   render(rec, topology) {
@@ -108,15 +109,19 @@ export class RecordsCard {
         <span class="metric-num">${rec.intact}</span>
         <span class="metric-of">of ${rec.total} intact</span>
       </div>
-      <div class="files" role="img" aria-label="${rec.intact} of ${rec.total} records intact">${this.files(rec.total, lost)}</div>
+      <div class="files" role="img" aria-label="${rec.intact} of ${rec.total} records intact">${this.files(rec.total, lost, false, this.lost)}</div>
       <p class="card-foot">${foot}</p>`;
+    this.lost = lost;
   }
 
-  files(total, lost, pending = false) {
+  // Records locked since the last redraw get the lock-in animation; the
+  // ones already locked stay still.
+  files(total, lost, pending = false, before = lost) {
     let html = '';
     for (let i = 0; i < total; i += 1) {
       const gone = i >= total - lost;
-      html += `<span class="file${gone ? ' file--lost' : ''}${pending ? ' file--pending' : ''}">${icon(gone ? 'lock' : 'file')}</span>`;
+      const fresh = gone && i < total - before;
+      html += `<span class="file${gone ? ' file--lost' : ''}${fresh ? ' is-new' : ''}${pending ? ' file--pending' : ''}">${icon(gone ? 'lock' : 'file')}</span>`;
     }
     return html;
   }
@@ -255,7 +260,8 @@ export class AlertsCard {
   // Returns the group the alert landed in.
   add(alert) {
     const g = this.merge(alert);
-    this.draw(g);
+    // Only a new line makes an entrance; a repeat just counts up.
+    this.draw(g.count === 1 ? g : null);
     return g;
   }
 
