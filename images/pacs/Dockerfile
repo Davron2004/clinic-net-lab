@@ -19,9 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --break-system-packages "pynetdicom==2.1.1" "pydicom==2.4.4"
 
-COPY --from=node /usr/local/bin/clinic-entrypoint /usr/local/bin/clinic-probe \
-                 /usr/local/bin/clinic-probe-dicom /usr/local/bin/clinic-dicom \
-                 /usr/local/bin/clinic-probe-pacs-web /usr/local/bin/
+# All of the lab's tools, not a hand-picked list: the test suite probes from
+# this machine too, and a probe missing here would show up as a test error.
+COPY --from=node /usr/local/bin/clinic-* /usr/local/bin/
 COPY --from=node /usr/local/share/clinic/ /usr/local/share/clinic/
 COPY rootfs/ /
 RUN chmod +x /usr/local/bin/*

@@ -8,12 +8,14 @@ FROM clinic-net-lab/node:${TAG} AS node
 FROM wazuh/wazuh-manager:4.14.9
 
 # iproute: to plug the machine into the lab network like every other node.
-RUN dnf install -y iproute && dnf clean all && rm -rf /var/cache/dnf
+# iputils: ping, which the test suite uses to check the machine is on the network.
+RUN dnf install -y iproute iputils && dnf clean all && rm -rf /var/cache/dnf
 # Filebeat ships alerts to the Wazuh indexer, which we do not run.
 RUN rm -rf /etc/services.d/filebeat
 
-# The test suite's probe tool, so the isolation tests can run on this machine too.
-COPY --from=node /usr/local/bin/clinic-probe /usr/local/bin/clinic-probe-reach /usr/local/bin/
+# The lab's tools (probes included), so the isolation tests can run on this
+# machine too. The whole set, so a new probe can never be missing here.
+COPY --from=node /usr/local/bin/clinic-* /usr/local/bin/
 
 COPY rootfs/ /
 RUN chmod +x /usr/local/bin/clinic-* /etc/services.d/clinic-ready/run

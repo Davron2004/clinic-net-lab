@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""clinic-probe-tcp connect|reach <host> <port> [timeout]: open a TCP connection.
+
+    connect  exit 0 if the connection opened, 1 if it was refused or nothing
+             came back. "Is the service reachable?"
+    reach    exit 0 if the target answered at all: it accepted the connection
+             or refused it (a TCP reset means the packet got through the
+             network and the machine said "nothing listening here"). Exit 1
+             only if nothing came back, which is what a firewall drop looks
+             like. "Is the network path open?" This tests the network, not
+             the program behind the port: the SIEM's flows use it so they pass
+             while Wazuh is still starting (or switched off), and the flows to
+             the clinic's public address use it because nothing listens there.
+
+Either way: exit 2 for an error (bad arguments, a name that does not resolve,
+or any other failure that says nothing about the network path).
+"""
+import errno
+import socket
+import sys
+
+# What a firewall drop (or a missing route) looks like from the sender.
+NO_ANSWER = {errno.ETIMEDOUT, errno.EHOSTUNREACH, errno.ENETUNREACH, errno.EHOSTDOWN}
+
+
+def main(argv):
+    try:
+        mode, host, port = argv[1], argv[2], int(argv[3])
+        timeout = float(argv[4]) if len(argv) > 4 else 3.0
+        if mode not in ("connect", "reach"):
+            raise ValueError(mode)
+    except (IndexError, ValueError):
+        print(__doc__, file=sys.stderr)
+        return 2
+    try:
+        addr = socket.gethostbyname(host)
+    except OSError as e:
+        print(f"cannot resolve {host}: {e}", file=sys.stderr)
+        return 2
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((addr, port))
+        return 0
+    except TimeoutError:          # nothing came back in time
+        return 1
+    except ConnectionRefusedError:
+        return 0 if mode == "reach" else 1
+    except OSError as e:
+        if e.errno in NO_ANSWER:
+            return 1
+        print(f"connecting to {host}:{port} failed: {e}", file=sys.stderr)
+        return 2
+    finally:
+        sock.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

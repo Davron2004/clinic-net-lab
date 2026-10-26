@@ -46,18 +46,19 @@ topology:
     doctor-pc:
       env: { IP: 10.10.10.12/24, GW: 10.10.10.1, DNS: 10.10.10.1, SERVICES: "listen:445,3389" }
 
-    # VLAN 20 - servers
+    # VLAN 20 - servers (no DNS server on purpose: they use fixed addresses,
+    # and the firewall gives this zone no DNS; see policy flow D34)
     emr:
       # The node image plus a Wazuh agent watching the patient records.
       image: clinic-net-lab/agent:${CLINIC_IMAGE_TAG:=dev}
-      env: { IP: 10.10.20.10/24, GW: 10.10.20.1, DNS: 10.10.20.1, SERVICES: "emr hl7 listen:22 wazuh-agent", READY_PORTS: "443 445 2575",
+      env: { IP: 10.10.20.10/24, GW: 10.10.20.1, SERVICES: "emr hl7 listen:22 wazuh-agent", READY_PORTS: "443 445 2575",
              WAZUH_MANAGER: 10.10.90.10, CLINIC_MONITORING: "${CLINIC_MONITORING:=1}" }
       binds:
         - ../run/secrets:/etc/clinic/secrets:ro
     pacs:
       # Orthanc, a real DICOM archive (images/pacs).
       image: clinic-net-lab/pacs:${CLINIC_IMAGE_TAG:=dev}
-      env: { IP: 10.10.20.20/24, GW: 10.10.20.1, DNS: 10.10.20.1, SERVICES: "orthanc", READY_PORTS: "4242 8042" }
+      env: { IP: 10.10.20.20/24, GW: 10.10.20.1, SERVICES: "orthanc", READY_PORTS: "4242 8042" }
 
     # VLAN 30 - medical devices (no DNS server on purpose)
     imaging:

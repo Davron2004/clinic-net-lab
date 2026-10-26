@@ -16,12 +16,13 @@ AA (accepted), AE (error) or AR (rejected).
 
     clinic-hl7 listen [port]               EMR side: receive, file, acknowledge
     clinic-hl7 send <host> [port]          lab analyzer: send one result, require AA
-    clinic-hl7 probe <host> [port] [secs]  test probe: a test-mode message, require AA
+    clinic-hl7 probe <host> [port] [secs]  test probe: a test-mode message; exit 0 AA, 1 blocked, 2 error
 
 All patients and values are synthetic.
 """
 import asyncio
 import datetime
+import errno
 import json
 import os
 import random
@@ -242,14 +243,26 @@ def send(host: str, port: int, timeout: float, test: bool) -> int:
         patient = random.choice([p for p in patients if p.get("labs")])
         panel = patient["labs"]
     ctrl, message = oru_message(patient, panel, "T" if test else "P")
+    # Exit status as clinic-probe: 0 accepted (AA), 1 the network gave no way
+    # through (refused, timed out, no route), 2 anything else: a name that
+    # does not resolve, a connection that dropped, a missing or negative ACK.
     try:
         reply = exchange(host, port, message, timeout)
-    except OSError as e:
+    except socket.gaierror as e:
+        print(f"hl7: cannot resolve {host}: {e}", file=sys.stderr)
+        return 2
+    except (ConnectionRefusedError, TimeoutError, socket.timeout) as e:
         print(f"hl7: no answer from {host}:{port} ({e})", file=sys.stderr)
         return 1
+    except OSError as e:
+        if e.errno in (errno.EHOSTUNREACH, errno.ENETUNREACH, errno.EHOSTDOWN):
+            print(f"hl7: no route to {host}:{port} ({e})", file=sys.stderr)
+            return 1
+        print(f"hl7: exchange with {host}:{port} failed ({e})", file=sys.stderr)
+        return 2
     code = ack_code(reply, ctrl)
     print(json.dumps({"control_id": ctrl, "mrn": patient["mrn"], "panel": panel, "ack": code or "none"}))
-    return 0 if code == "AA" else 1
+    return 0 if code == "AA" else 2
 
 
 def main(argv):

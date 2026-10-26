@@ -1,15 +1,39 @@
 #!/bin/bash
-# clinic-probe <kind> <host> [port] [timeout-seconds]
-# Tries to reach a service and exits 0 if it answered, 1 if not.
-# The test suite runs this inside the source machine, so the packet takes
-# exactly the path a real program on that machine would take.
+# clinic-probe <kind> <host> <port> [timeout-seconds]
+# Tries to reach a service from this machine. The test suite runs it inside
+# the source machine, so the packet takes exactly the path a real program on
+# that machine would take.
+#
+# Exit status (every kind follows it):
+#   0  reached: the service answered
+#   1  blocked: nothing came back (timed out, refused, no route); this is
+#      what a firewall drop looks like
+#   2  error: the probe could not give an answer (bad arguments, a missing
+#      tool, a name that does not resolve, or a service that answered in a
+#      way the probe does not understand). An error is never "blocked".
 set -uo pipefail
-kind=$1; host=$2; port=${3:-}; t=${4:-3}
+usage() { echo "usage: clinic-probe <kind> <host> <port> [timeout-seconds]" >&2; exit 2; }
+[ $# -ge 3 ] || usage
+kind=$1; host=$2; port=$3; t=${4:-3}
+[[ $port =~ ^[0-9]+$ && $t =~ ^[0-9]+$ && -n $host ]] || usage
+
 case "$kind" in
-    tcp)   nc -z -w "$t" "$host" "$port" ;;
-    https) curl -skf -o /dev/null --connect-timeout "$t" --max-time $((t + 2)) "https://$host:${port:-443}/" ;;
-    dns)   out=$(dig +time="$t" +tries=1 +short "@$host" -p "${port:-53}" example.org 2>/dev/null) && [ -n "$out" ] ;;
-    icmp)  ping -c 1 -W "$t" "$host" >/dev/null ;;
+    # A TCP connection opens. Refused counts as blocked.
+    tcp)   exec clinic-probe-tcp connect "$host" "$port" "$t" ;;
+    # The network path to host:port is open: the target answered at all,
+    # even if only to refuse the connection (see clinic-probe-tcp).
+    reach) exec clinic-probe-tcp reach "$host" "$port" "$t" ;;
+    https) exec clinic-curl-verdict -sk -f -o /dev/null --connect-timeout "$t" --max-time $((t + 2)) \
+               "https://$host:$port/" ;;
+    dns)   out=$(dig +time="$t" +tries=1 +short "@$host" -p "$port" example.org 2>/dev/null)
+           rc=$?
+           case $rc in
+               0) grep -qv '^;;' <<<"$out" && exit 0
+                  echo "the DNS server answered, but without an address" >&2; exit 2 ;;
+               9) exit 1 ;;   # no reply from the server
+               *) echo "dig failed (exit $rc)" >&2; exit 2 ;;
+           esac ;;
+    icmp)  ping -c 1 -W "$t" "$host" >/dev/null; exit $? ;;   # ping: 1 no reply, 2 error
     *)     if command -v "clinic-probe-$kind" >/dev/null; then exec "clinic-probe-$kind" "$host" "$port" "$t"; fi
            echo "unknown probe kind $kind" >&2; exit 2 ;;
 esac
