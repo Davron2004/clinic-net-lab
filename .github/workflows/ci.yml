@@ -36,6 +36,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Load kernel modules the lab uses
+        # Containers share the host kernel; Docker Desktop has these built in,
+        # a stock Ubuntu kernel ships them as modules.
+        run: sudo modprobe -a wireguard 8021q nfnetlink_log
+
       - name: Start the segmented clinic
         run: ./lab up
 
