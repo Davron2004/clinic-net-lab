@@ -1,17 +1,17 @@
 # clinic-net-lab
 
 A small medical clinic's network, built as code. It has six segmented zones, a
-default-deny firewall, real medical protocols, a VPN for remote doctors and a
-security monitor. A test suite sends real traffic to prove that patient data
+default-deny firewall, medical protocols (DICOM, HL7), a VPN for remote
+doctors and a security monitor. A test suite sends real traffic to prove that patient data
 only flows where it should.
 
 Everything runs in containers on one laptop. You need Docker and nothing else.
 
-**[Watch the 81-second demo](https://github.com/Davron2004/clinic-net-lab/releases/download/v1.0/clinic-net-lab-demo.mp4)**: the same ransomware attack on a flat network and on this one.
+[Demo video (81 seconds)](https://github.com/Davron2004/clinic-net-lab/releases/download/v1.0/clinic-net-lab-demo.mp4): the same ransomware attack on a flat network and on this one.
 
 ![The clinic map during a simulated ransomware attack on the segmented network](docs/img/map-segmented-attack.png)
 
-## The short version
+## Results
 
 A ransomware-infected imaging workstation tries 13 common attack paths. The
 lab runs that attack twice:
@@ -19,8 +19,8 @@ lab runs that attack twice:
 | | Flat network (the "before") | Segmented network (this design) |
 |---|---|---|
 | Attack paths that got through | 13 of 13 | 1 of 13: sending images to the archive, its one job |
-| Patient records encrypted | **12 of 12** | **0 of 12** |
-| Isolation tests matching policy (61 flows) | 22 (38 violations, 1 broken) | **61** |
+| Patient records encrypted | 12 of 12 | 0 of 12 |
+| Isolation tests matching policy (61 flows) | 22 (38 violations, 1 broken) | 61 |
 | What the security monitor saw | file-integrity alerts for each record and a "looks like ransomware" alert, after the damage | "device tried the internet" and "scan" alerts, within about 2 seconds |
 
 ![The same attack on the flat network: all 13 paths open, records encrypted](docs/img/map-flat-attack.png)
