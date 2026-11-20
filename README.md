@@ -21,7 +21,7 @@ lab runs that attack twice:
 | Attack paths that got through | 13 of 13 | 1 of 13: sending images to the archive, its one job |
 | Patient records encrypted | **12 of 12** | **0 of 12** |
 | Isolation tests matching policy (61 flows) | 22 (38 violations, 1 broken) | **61** |
-| What the security monitor saw | a file-integrity alert for each record, after the damage | "device tried the internet" and "scan" alerts, within about 2 seconds |
+| What the security monitor saw | file-integrity alerts for each record and a "looks like ransomware" alert, after the damage | "device tried the internet" and "scan" alerts, within about 2 seconds |
 
 ![The same attack on the flat network: all 13 paths open, records encrypted](docs/img/map-flat-attack.png)
 
@@ -111,8 +111,9 @@ it sees) and spoofed source addresses. For every blocked flow it also checks
 that the target service is actually running, so a "blocked" result can't just
 mean "nothing was listening". A probe that cannot give an answer (a machine
 that is down, a missing tool) is an ERROR, never a pass. After the named
-flows, a default-deny sweep tries 24 common ports between every pair of zones
-and fails if anything policy doesn't allow gets through. It writes a
+flows, a default-deny sweep runs from one machine in each zone: it tries 24
+common ports on one machine in every other zone and on the router (1,344
+probes), and fails if anything policy doesn't allow gets through. It writes a
 compliance-style report with a fingerprint of the firewall ruleset it tested.
 
 [CI](.github/workflows/ci.yml) builds the whole clinic on a fresh Ubuntu
@@ -134,9 +135,11 @@ The last check proves the tests can fail.
 | [`topologies/`](topologies) | The segmented clinic and the flat "before", as containerlab topologies |
 | [`config/`](config) | Router (interfaces, nftables, dnsmasq, WireGuard) and switch port maps, per network |
 | [`images/node`](images/node) | One Debian image for every simulated machine. `ROLE`/`SERVICES` decide what it becomes |
+| [`images/toolbox`](images/toolbox) | Runs the test suite, the attack scenario and the map, so the host needs only Docker |
 | [`images/pacs`](images/pacs) | Orthanc, the image archive (PACS) |
 | [`images/siem`](images/siem), [`images/agent`](images/agent) | Wazuh manager with the clinic's rules; Wazuh agents for the EMR (file integrity) and the router (firewall log) |
 | [`policy/`](policy), [`tests/`](tests) | The 61-flow policy and the isolation test suite |
+| [`labkit/`](labkit) | Shared Python for talking to the running lab, and the routine background traffic that keeps the map busy |
 | [`scenarios/`](scenarios) | The ransomware scenario |
 | [`map/`](map) | The live clinic map (Python standard library server and plain JavaScript, no build step) |
 | [`learn/`](learn) | One doc per stage: concepts mapped to software ideas, plus "break it" exercises with answers |
